@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Espaçamento de Grade: Alfa e Beta</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body { background:#101216; color:#e5e7eb; font-family:'Segoe UI', sans-serif; }
+  .card { background:#171a20; border:1px solid #262a33; }
+  .nav-tabs .nav-link { color:#98a2b3; }
+  .nav-tabs .nav-link.active { background:#1d212a; color:#fff; border-color:#262a33; }
+  canvas { background:#0d0f13; border-radius:8px; width:100%; height:400px; display:block; }
+  .metric-box { background:#1d212a; border-radius:8px; padding:10px 14px; }
+  .metric-value { font-size:1.3rem; font-weight:700; color:#f5f6f8; }
+  .btn-alfa { background:#3b6fd4; border:none; color:#fff; } .btn-alfa:hover{ background:#2f59ab; }
+  .btn-beta { background:#3fae72; border:none; color:#fff; } .btn-beta:hover{ background:#31875a; }
+  .desc-box { border-left:4px solid #3b6fd4; padding-left:14px; color:#f0f2f5; font-size:0.95rem; line-height:1.55; }
+  .desc-beta { border-left-color:#3fae72; }
+  .legend-dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px; }
+  footer { color:#8b929e; font-size:0.85rem; }
+  .cite-badge {
+    display:inline-block; background:#2a3f66; color:#a9c4ff; font-size:0.72rem;
+    font-weight:600; padding:1px 6px; border-radius:6px; margin:0 2px; white-space:nowrap;
+  }
+  .cite-badge.beta-cite { background:#204a35; color:#8fe0b3; }
+  h3.h5 { color:#ffffff; }
+  .text-secondary { color:#a7aeb9 !important; }
+</style>
+</head>
+<body>
+<div class="container py-4">
+
+  <h1 class="mb-1">Espaçamento de Grade: Alfa (α) e Beta (β)</h1>
+  <p class="text-secondary mb-4">Os dois parâmetros que definem quando e onde uma grade de operações executa uma ordem.</p>
+
+  <ul class="nav nav-tabs" id="tabs">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#alfa" id="tab-alfa">1. Alfa (α) — Espaçamento da Grade</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#beta" id="tab-beta">2. Beta (β) — Confirmação de Reversão</button></li>
+  </ul>
+
+  <div class="tab-content border border-top-0 rounded-bottom p-3" style="background:#131620;">
+
+    <!-- ALFA -->
+    <div class="tab-pane fade show active" id="alfa">
+      <div class="row g-3 mt-2">
+        <div class="col-lg-8">
+          <canvas id="cvAlfa"></canvas>
+          <div class="d-flex gap-3 mt-2 align-items-center">
+            <button class="btn btn-alfa btn-sm" onclick="strategies.alfa.play()">▶ Reproduzir</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="strategies.alfa.reset()">⟲ Reiniciar</button>
+            <span class="small"><span class="legend-dot" style="background:#3b6fd4;"></span>Linhas de grade (α) &nbsp; <span class="legend-dot" style="background:#6fd48b;"></span>Preço</span>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card p-3 h-100">
+            <h3 class="h5">O que é Alfa</h3>
+            <p class="desc-box small">Alfa é a <strong>distância percentual entre as linhas da grade</strong> — define o espaçamento fixo em que cada novo nível de entrada é posicionado, acima ou abaixo do preço de referência <span class="cite-badge">web:23</span>. Grades com alfa pequeno (ex.: 1%) geram mais entradas e reagem a pequenas oscilações; alfa grande (ex.: 4%) espera movimentos maiores antes de acionar uma nova camada <span class="cite-badge">web:28</span>.</p>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Fórmula do nível n</div>
+              <div class="metric-value" style="font-size:1rem;">preço<sub>n</sub> = preço₀ × (1 − α)<sup>n</sup></div>
+            </div>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Alfa configurado</div>
+              <div class="metric-value" id="alfaVal">2%</div>
+            </div>
+            <input type="range" min="1" max="5" step="0.5" value="2" class="form-range" id="alfaSlider">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BETA -->
+    <div class="tab-pane fade" id="beta">
+      <div class="row g-3 mt-2">
+        <div class="col-lg-8">
+          <canvas id="cvBeta"></canvas>
+          <div class="d-flex gap-3 mt-2 align-items-center">
+            <button class="btn btn-beta btn-sm" onclick="strategies.beta.play()">▶ Reproduzir</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="strategies.beta.reset()">⟲ Reiniciar</button>
+            <span class="small"><span class="legend-dot" style="background:#3b6fd4;"></span>Linha de grade (α) &nbsp; <span class="legend-dot" style="background:#3fae72;"></span>Zona de confirmação (β) &nbsp; <span class="legend-dot" style="background:#6fd48b;"></span>Preço</span>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card p-3 h-100">
+            <h3 class="h5">O que é Beta</h3>
+            <p class="desc-box desc-beta small">Beta é a <strong>margem de confirmação de reversão</strong> exigida depois que o preço toca uma linha de grade (α). Em vez de executar a ordem no toque, a estratégia espera o preço recuar β% a partir do ponto extremo antes de confirmar a entrada — um filtro contra falsos rompimentos <span class="cite-badge beta-cite">web:23</span>.</p>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Regra de execução</div>
+              <div class="metric-value" style="font-size:0.95rem;">Compra só após recuo de β a partir da mínima</div>
+            </div>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Beta configurado</div>
+              <div class="metric-value" id="betaVal">1%</div>
+            </div>
+            <input type="range" min="0.3" max="2" step="0.1" value="1" class="form-range" id="betaSlider">
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="row mt-4 g-3">
+    <div class="col-12">
+      <div class="card p-3">
+        <h3 class="h5">Comparativo rápido</h3>
+        <div class="table-responsive">
+        <table class="table table-dark table-sm mb-0">
+          <thead><tr><th>Parâmetro</th><th>O que controla</th><th>Efeito de valor baixo</th><th>Efeito de valor alto</th></tr></thead>
+          <tbody>
+            <tr><td><span class="legend-dot" style="background:#3b6fd4;"></span>Alfa (α)</td><td>Distância entre linhas da grade</td><td>Mais entradas, mais sensível a ruído <span class="cite-badge">web:28</span></td><td>Menos entradas, exige movimento maior</td></tr>
+            <tr><td><span class="legend-dot" style="background:#3fae72;"></span>Beta (β)</td><td>Confirmação de reversão antes de operar</td><td>Entra rápido, mais suscetível a falsos sinais <span class="cite-badge beta-cite">web:23</span></td><td>Entra mais tarde, com maior confirmação de tendência</td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="mt-4 text-center">Simulação educacional — valores ilustrativos, não constituem recomendação de investimento.</footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function buildAlfa(canvasId, elVal, sliderId) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const slider = document.getElementById(sliderId);
+  let alfa = parseFloat(slider.value) / 100;
+  let W, H, step = 0, animId = null;
+
+  function resize() {
+    const cw = canvas.getBoundingClientRect().width || 600;
+    W = canvas.width = cw * devicePixelRatio;
+    H = canvas.height = 400 * devicePixelRatio;
+    canvas.style.height = '400px';
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  slider.addEventListener('input', () => {
+    alfa = parseFloat(slider.value) / 100;
+    elVal.textContent = slider.value + '%';
+    draw();
+  });
+
+  const basePrice = 100;
+  const numLevels = 6;
+
+  function levelsArr() {
+    return Array.from({length: numLevels}, (_, i) => basePrice * Math.pow(1 - alfa, i));
+  }
+
+  function priceToY(price, cw, ch) {
+    const minP = basePrice * Math.pow(1 - alfa, numLevels);
+    const maxP = basePrice * 1.03;
+    const t = (price - minP) / (maxP - minP);
+    return ch - t * ch * 0.85 - ch * 0.05;
+  }
+
+  function draw() {
+    resize();
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    ctx.clearRect(0,0,W,H);
+    ctx.save();
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+    const levels = levelsArr();
+
+    levels.forEach((p, i) => {
+      const y = priceToY(p, cw, ch);
+      ctx.strokeStyle = 'rgba(59,111,212,0.55)';
+      ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.moveTo(70, y); ctx.lineTo(cw-20, y); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#98a2b3';
+      ctx.font = '11px Segoe UI';
+      ctx.fillText(p.toFixed(2), 10, y+4);
+      if (i > 0) {
+        const yPrev = priceToY(levels[i-1], cw, ch);
+        const midY = (y + yPrev) / 2;
+        ctx.fillStyle = '#3b6fd4';
+        ctx.font = 'bold 10px Segoe UI';
+        ctx.fillText('α', cw - 40, midY + 3);
+      }
+    });
+
+    const totalSteps = 140;
+    const progress = Math.min(step, totalSteps) / totalSteps;
+    const simPrice = basePrice - progress * (basePrice - levels[levels.length-1]);
+    const pathEndX = 70 + progress * (cw - 100);
+    ctx.strokeStyle = '#6fd48b';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let x = 70; x <= pathEndX; x++) {
+      const p2 = (x - 70) / (cw - 100);
+      const pr = basePrice - p2 * (basePrice - levels[levels.length-1]);
+      const y = priceToY(pr, cw, ch);
+      if (x === 70) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    const y = priceToY(simPrice, cw, ch);
+    ctx.beginPath(); ctx.arc(pathEndX, y, 5, 0, Math.PI*2); ctx.fillStyle = '#6fd48b'; ctx.fill();
+
+    ctx.restore();
+  }
+
+  function tick() { step++; draw(); if (step < 160) animId = requestAnimationFrame(tick); else animId=null; }
+
+  draw();
+  return {
+    play() { if(animId) cancelAnimationFrame(animId); step=0; tick(); },
+    reset() { if(animId) cancelAnimationFrame(animId); step=0; draw(); },
+    redraw() { draw(); }
+  };
+}
+
+function buildBeta(canvasId, elVal, sliderId) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  const slider = document.getElementById(sliderId);
+  let beta = parseFloat(slider.value) / 100;
+  let W, H, step = 0, animId = null;
+  const alfaLevel = 96;
+  const basePrice = 100;
+
+  function resize() {
+    const cw = canvas.getBoundingClientRect().width || 600;
+    W = canvas.width = cw * devicePixelRatio;
+    H = canvas.height = 400 * devicePixelRatio;
+    canvas.style.height = '400px';
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  slider.addEventListener('input', () => {
+    beta = parseFloat(slider.value) / 100;
+    elVal.textContent = slider.value + '%';
+    draw();
+  });
+
+  function priceToY(price, ch) {
+    const minP = 92, maxP = 102;
+    const t = (price - minP) / (maxP - minP);
+    return ch - t*ch*0.85 - ch*0.05;
+  }
+
+  function pricePath(progress) {
+    const low = alfaLevel * (1 - beta*1.4);
+    if (progress < 0.5) {
+      const p = progress/0.5;
+      return basePrice - p*(basePrice-low);
+    } else {
+      const p = (progress-0.5)/0.5;
+      const reboundTarget = low * (1+beta);
+      return low + p*(reboundTarget-low);
+    }
+  }
+
+  function draw() {
+    resize();
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    ctx.clearRect(0,0,W,H);
+    ctx.save();
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+
+    const yAlfa = priceToY(alfaLevel, ch);
+    ctx.strokeStyle = 'rgba(59,111,212,0.6)';
+    ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(70,yAlfa); ctx.lineTo(cw-20,yAlfa); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#98a2b3'; ctx.font='11px Segoe UI';
+    ctx.fillText('linha α: ' + alfaLevel.toFixed(1), 10, yAlfa+4);
+
+    const low = alfaLevel * (1 - beta*1.4);
+    const yLow = priceToY(low, ch);
+    const yConfirm = priceToY(low*(1+beta), ch);
+    ctx.fillStyle = 'rgba(63,174,114,0.18)';
+    ctx.fillRect(70, yConfirm, cw-90, yLow-yConfirm);
+    ctx.strokeStyle = 'rgba(63,174,114,0.6)';
+    ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(70,yConfirm); ctx.lineTo(cw-20,yConfirm); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#3fae72'; ctx.font='11px Segoe UI';
+    ctx.fillText('confirmação β: ' + (low*(1+beta)).toFixed(2), 10, yConfirm-4);
+
+    const totalSteps = 160;
+    const progress = Math.min(step, totalSteps) / totalSteps;
+    const pathEndX = 70 + progress*(cw-100);
+    ctx.strokeStyle = '#6fd48b'; ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    for (let x=70; x<=pathEndX; x++) {
+      const p2 = (x-70)/(cw-100);
+      const pr = pricePath(p2);
+      const y = priceToY(pr, ch);
+      if (x===70) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    const curPrice = pricePath(progress);
+    const y = priceToY(curPrice, ch);
+    ctx.beginPath(); ctx.arc(pathEndX, y, 5, 0, Math.PI*2); ctx.fillStyle='#6fd48b'; ctx.fill();
+
+    if (progress > 0.5 && curPrice >= low*(1+beta)) {
+      ctx.beginPath(); ctx.arc(pathEndX, y, 9, 0, Math.PI*2);
+      ctx.strokeStyle = '#f0ad4e'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#f0ad4e'; ctx.font='bold 11px Segoe UI';
+      ctx.fillText('Entrada confirmada', pathEndX-55, y-16);
+    }
+
+    ctx.restore();
+  }
+
+  function tick() { step++; draw(); if (step<180) animId = requestAnimationFrame(tick); else animId=null; }
+
+  draw();
+  return {
+    play() { if(animId) cancelAnimationFrame(animId); step=0; tick(); },
+    reset() { if(animId) cancelAnimationFrame(animId); step=0; draw(); },
+    redraw() { draw(); }
+  };
+}
+
+const strategies = {};
+window.addEventListener('load', () => {
+  strategies.alfa = buildAlfa('cvAlfa', document.getElementById('alfaVal'), 'alfaSlider');
+  strategies.beta = buildBeta('cvBeta', document.getElementById('betaVal'), 'betaSlider');
+  document.getElementById('tab-beta').addEventListener('shown.bs.tab', () => strategies.beta.redraw());
+  document.getElementById('tab-alfa').addEventListener('shown.bs.tab', () => strategies.alfa.redraw());
+});
+</script>
+</body>
+</html>

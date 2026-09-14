@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# IDEs
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Env
+.env
+
+# User profiles
+user_profiles/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config
+.env
+
+# Local database
+*.db
+cripto_bolt.db
+
+# OAuth tokens (gmail etc.)
+tokens.json
+
+# Build/export artifacts
+ORACULO-CRYPTO.zip

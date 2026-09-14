@@ -1,0 +1,1140 @@
+import asyncio
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_UP
+import hashlib
+import logging
+import math
+import os
+from pathlib import Path
+import sys
+from typing import Any, Dict, List, Optional, Tuple
+from platform_crypto.protective_orders import ProtectiveOrdersManager
+
+import pandas as pd
+from dotenv import load_dotenv
+
+# Carregamento robusto e prioritÃ¡rio do .env na raiz
+ROOT_DIR = Path(__file__).resolve().parent
+ENV_PATH = ROOT_DIR / ".env"
+load_dotenv(dotenv_path=ENV_PATH, override=True)
+
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from core.data_feed import CryptoDataFeed
+from core.telegram_bolt import TelegramNotifier
+from database.supabase_db import (
+    get_recent_candles,
+    log_order,
+    save_candles_batch,
+    save_signal_to_db,
+)
+from platform_crypto.exchange_executor import ExchangeExecutionEngine
+from strategy.linear_gradient import LinearGradientManager
+from strategy.logic_engine import SignalDecisionEngine
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("CriptoBolt")
+
+
+TERMINAL_REJECTED_ORDER_STATUSES = {
+    "REJECTED",
+    "CANCELED",
+    "CANCELLED",
+    "EXPIRED",
+    "FAILED",
+}
+
+SUCCESSFUL_FILLED_ORDER_STATUSES = {
+    "CLOSED",
+    "FILLED",
+}
+
+
+def _as_float(self, value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_order_filled(
+    self,
+    order: Optional[Dict[str, Any]],
+    expected_quantity: float,
+) -> bool:
+    if not isinstance(order, dict):
+        return False
+
+    status = str(order.get("status", "")).upper()
+    filled_quantity = self._as_float(
+        order.get("filled")
+        or order.get("executedQty")
+        or order.get("amount"),
+        0.0,
+    )
+
+    tolerance = max(expected_quantity * 0.001, 1e-12)
+
+    if status in TERMINAL_REJECTED_ORDER_STATUSES:
+        return False
+
+    if status in SUCCESSFUL_FILLED_ORDER_STATUSES:
+        return filled_quantity > 0.0
+
+    return filled_quantity >= max(expected_quantity - tolerance, 0.0)
+
+
+class CriptoBoltAgent:
+    """Orquestrador Central AssÃ­ncrono com Monitoramento HÃ­brido de TP/SL via High/Low."""
+
+    def __init__(self) -> None:
+        self.paper_mode: bool = os.getenv("BOT_TRADER_PAPER_MODE", "true").lower() == "true"
+        self.watchlist: List[str] = [
+            s.strip()
+            for s in os.getenv("BOT_TRADER_WATCHLIST", "BTC/USDT,ETH/USDT").split(",")
+            if s.strip()
+        ]
+        self.usdt_per_level: float = float(os.getenv("LINE_CAPITAL_USDT", "5.50"))
+
+        self.feed: CryptoDataFeed = CryptoDataFeed(exchange_id="binance")
+        self.executor: ExchangeExecutionEngine = ExchangeExecutionEngine(exchange_id="binance")
+        self.protective_orders = ProtectiveOrdersManager(self.executor)
+        self.decision_engine: SignalDecisionEngine = SignalDecisionEngine()
+
+        self.active_gradients: Dict[str, LinearGradientManager] = {}
+        self.semaphore: asyncio.Semaphore = asyncio.Semaphore(5)
+        self.processed_order_keys: set[str] = set()
+
+        # Cooldown para notificaÃ§Ãµes de sinal
+        self.last_signal_sent_time: Dict[str, datetime] = {}
+        self.last_signal_direction: Dict[str, str] = {}
+
+        # Contadores da SessÃ£o
+        self.cycle_count: int = 0
+        self.total_trades_count: int = 0
+        self.take_profit_count: int = 0
+        self.stop_loss_count: int = 0
+        self.take_profit_usd: float = 0.0
+        self.stop_loss_usd: float = 0.0
+
+        # Contadores do Heartbeat de 30m
+        self.last_heartbeat_cycle_count: int = 0
+        self.last_heartbeat_trades_count: int = 0
+        self.last_heartbeat_tp_count: int = 0
+        self.last_heartbeat_sl_count: int = 0
+        self.last_heartbeat_tp_usd: float = 0.0
+        self.last_heartbeat_sl_usd: float = 0.0
+        self.last_heartbeat_time: datetime = datetime.now()
+
+        logger.info(
+            f"âš¡ Cripto Bolt Inicializado | Modo: {'PAPER TRADING' if self.paper_mode else 'LIVE / DEMO REAL'} | "
+            f"Capital por Linha: ${self.usdt_per_level:.2f} USDT | Watchlist: {self.watchlist}"
+        )
+
+    def calculate_level_quantity(self, symbol: str, current_price: float) -> float:
+        if current_price <= 0:
+            return 0.0
+
+        min_notional = 5.00
+        executor_limit = float(
+            getattr(self.executor, "max_notional_per_level", getattr(self.executor, "max_notional_per_line", 6.50))
+        )
+        max_notional = max(min_notional, executor_limit)
+
+        sym_clean = symbol.upper().replace("/", "").replace(":USDT", "")
+
+        if any(asset in sym_clean for asset in ("ADA", "DOGE", "XLM")):
+            step_size, precision = 1.0, 0
+        elif "XRP" in sym_clean:
+            step_size, precision = 0.1, 1
+        elif "SOL" in sym_clean or "BNB" in sym_clean:
+            step_size, precision = 0.01, 2
+        elif "BTC" in sym_clean or "ETH" in sym_clean:
+            step_size, precision = 0.001, 3
+        else:
+            step_size, precision = 0.01, 2
+
+        desired_notional = min(self.usdt_per_level, max_notional)
+        quantity_steps = math.ceil(desired_notional / (current_price * step_size))
+        quantity = round(quantity_steps * step_size, precision)
+
+        final_notional = quantity * current_price
+        if final_notional < min_notional:
+            quantity = round(quantity + step_size, precision)
+            final_notional = quantity * current_price
+
+        if final_notional > max_notional * 1.05:
+            return 0.0
+
+        return float(quantity)
+
+    def generate_idempotency_key(self, symbol: str, level: int, cycle: int) -> str:
+        raw_key = f"{symbol}_{level}_{cycle}_{datetime.now().strftime('%Y%m%d%H')}"
+        return hashlib.sha256(raw_key.encode()).hexdigest()[:16]
+
+    async def close_position_on_exchange(
+        self, symbol: str, direction: str, total_quantity: float, exit_price: float
+    ) -> Optional[Dict[str, Any]]:
+        """Executa fechamento a mercado com parÃ¢metro explÃ­cito reduce_only."""
+        close_side = "SELL" if direction.upper() == "BUY" else "BUY"
+        try:
+            return await self.executor.execute_order(
+                symbol=symbol,
+                side=close_side,
+                order_type="MARKET",
+                price=exit_price,
+                quantity=total_quantity,
+                level=0,
+                reduce_only=True,
+            )
+        except Exception as exc:
+            logger.error(f"[{symbol}] Erro na execuÃ§Ã£o da ordem de fechamento: {exc}")
+            return None
+
+    async def finalize_gradient_exit(
+        self,
+        symbol: str,
+        grad: LinearGradientManager,
+        reason: str,
+        reference_exit_price: float,
+    ) -> bool:
+        """Executa a saÃ­da definitiva da grade com cancelamento prÃ©vio de proteÃ§Ãµes e conferÃªncia de preenchimento."""
+        filled_levels = grad.get_filled_levels()
+        total_quantity = float(sum(level.quantity for level in filled_levels))
+
+        if total_quantity <= 0.0:
+            logger.error(f"[{symbol}] SaÃ­da {reason} ignorada: nÃ£o hÃ¡ volume preenchido na grade.")
+            self.active_gradients.pop(symbol, None)
+            return False
+
+        avg_price = grad.calculate_average_price() or grad.entry_price
+
+        # 1. CANCELA ORDENS PROTETIVAS PENDENTES (TP/SL)
+        # Essencial para evitar o erro -2022 (ReduceOnly Order is rejected) na Binance Futures.
+        try:
+            cancelled_ids = await self.protective_orders.cancel_protective_orders(symbol)
+            logger.info(
+                f"[{symbol}] ProteÃ§Ãµes canceladas antes de executar {reason}: "
+                f"{cancelled_ids if cancelled_ids else 'nenhuma ordem no registro'}"
+            )
+        except Exception as cancel_exc:
+            logger.warning(
+                f"[{symbol}] Alerta ao cancelar proteÃ§Ãµes antes da saÃ­da: {cancel_exc}. "
+                "Tentando prosseguir com o fechamento a mercado."
+            )
+
+        # 2. DISPARA ORDEM A MERCADO DE FECHAMENTO (reduceOnly=True)
+        close_order = await self.close_position_on_exchange(
+            symbol=symbol,
+            direction=grad.direction,
+            total_quantity=total_quantity,
+            exit_price=reference_exit_price,
+        )
+
+        # 3. VALIDAÃ‡ÃƒO RIGOROSA DA CONFIRMAÃ‡ÃƒO DE EXECUÃ‡ÃƒO
+        if not isinstance(close_order, dict):
+            logger.critical(
+                f"[{symbol}] {reason} disparado, mas a ordem de fechamento NÃƒO foi aceita pela exchange. "
+                "A grade serÃ¡ mantida ativa para nova tentativa de saÃ­da."
+            )
+            return False
+
+        status = str(close_order.get("status", "")).upper()
+        filled_qty = float(
+            close_order.get("filled")
+            or close_order.get("filled_quantity")
+            or close_order.get("executedQty")
+            or 0.0
+        )
+
+        rejected_statuses = {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}
+        tolerance = max(total_quantity * 0.001, 1e-8)
+
+        if status in rejected_statuses or filled_qty <= 0.0 or filled_qty < (total_quantity - tolerance):
+            logger.critical(
+                f"[{symbol}] Fechamento {reason} incompleto ou rejeitado | "
+                f"status={status} | executado={filled_qty:.6f} | esperado={total_quantity:.6f}. "
+                "A grade continuarÃ¡ ativa para monitoramento."
+            )
+            return False
+
+        # 4. CAPTURA DE PREÃ‡O REAL, ID E PNL
+        order_id = str(
+            close_order.get("id")
+            or close_order.get("exchange_order_id")
+            or close_order.get("exchangeOrderId")
+            or ""
+        ) or None
+
+        exit_price = float(
+            close_order.get("average")
+            or close_order.get("average_price")
+            or close_order.get("price")
+            or reference_exit_price
+        )
+
+        # PnL realizado direto da exchange CCXT (considerando taxas)
+        exchange_pnl, fees = await self.fetch_realized_pnl_from_exchange(
+            symbol=symbol,
+            order_id=order_id,
+        )
+
+        # CÃ¡lculo estimado como fallback caso a API de trades demore a consolidar
+        estimated_pnl = (
+            (exit_price - avg_price) * filled_qty
+            if grad.direction == "BUY"
+            else (avg_price - exit_price) * filled_qty
+        )
+
+        final_pnl = (
+            float(exchange_pnl)
+            if order_id is not None and float(exchange_pnl) != 0.0
+            else float(estimated_pnl)
+        )
+
+        # 5. ATUALIZAÃ‡ÃƒO DOS CONTADORES OPERACIONAIS E FINANCEIROS
+        is_tp = "TAKE_PROFIT" in reason.upper()
+        if is_tp:
+            self.take_profit_count += 1
+            self.take_profit_usd = round(self.take_profit_usd + max(final_pnl, 0.0), 8)
+        else:
+            self.stop_loss_count += 1
+            self.stop_loss_usd = round(self.stop_loss_usd + abs(min(final_pnl, 0.0)), 8)
+
+        # 6. LIMPEZA FINAL E TELEMETRIA
+        try:
+            await self.protective_orders.clear_symbol(symbol)
+        except Exception as exc:
+            logger.warning(f"[{symbol}] Erro na limpeza residual de proteÃ§Ãµes: {exc}")
+
+        try:
+            await TelegramNotifier.notificar_fechamento(
+                symbol=symbol,
+                side=grad.direction,
+                avg_price=avg_price,
+                exit_price=exit_price,
+                quantity=filled_qty,
+                motivo=reason,
+            )
+        except Exception as exc:
+            logger.warning(f"[{symbol}] Fechamento confirmado, mas falhou notificaÃ§Ã£o no Telegram: {exc}")
+
+        # Remove a grade da memÃ³ria somente apÃ³s preenchimento confirmado
+        self.active_gradients.pop(symbol, None)
+
+        logger.info(
+            f"[{symbol}] âœ… SAÃDA CONFIRMADA | motivo={reason} | ordem={order_id} | "
+            f"PM=${avg_price:.6f} | saÃ­da=${exit_price:.6f} | qtd={filled_qty:.6f} | "
+            f"PnL=${final_pnl:.6f} USDT | Taxas=${fees:.6f} USDT"
+        )
+        return True
+
+    def _validate_gradient_invariants(self, gradient: LinearGradientManager) -> None:
+        """
+        Interrompe a criaÃ§Ã£o de grades incoerentes.
+
+        LONG / BUY deve obedecer: Stop < Entrada < TP
+        SHORT / SELL deve obedecer: TP < Entrada < Stop
+        """
+        entry = gradient.entry_price
+        take_profit = gradient.calculate_take_profit()
+        stop_loss = gradient.calculate_stop_loss()
+
+        logger.warning(
+            f"[{gradient.symbol}] NOVA GRADE | "
+            f"direction={gradient.direction} | "
+            f"L1.side={gradient.levels[0].side} | "
+            f"Entrada=${entry:.6f} | TP=${take_profit:.6f} | Stop=${stop_loss:.6f}"
+        )
+
+        if gradient.direction == "BUY" and not (stop_loss < entry < take_profit):
+            raise ValueError(
+                f"[{gradient.symbol}] Grade LONG invÃ¡lida: "
+                f"Stop={stop_loss}, Entrada={entry}, TP={take_profit}."
+            )
+
+        if gradient.direction == "SELL" and not (take_profit < entry < stop_loss):
+            raise ValueError(
+                f"[{gradient.symbol}] Grade SHORT invÃ¡lida: "
+                f"TP={take_profit}, Entrada={entry}, Stop={stop_loss}."
+            )
+
+    async def check_and_fill_gradient_levels(
+        self,
+        symbol: str,
+        grad: LinearGradientManager,
+        current_low: float,
+        current_high: float,
+        current_close: float,
+    ) -> None:
+        """Executa nÃ­veis 2+ somente apÃ³s toque do candle e confirmaÃ§Ã£o da exchange."""
+        for level in grad.levels:
+            if level.status != "PENDING" or level.level == 1:
+                continue
+
+            touched = (
+                (grad.direction == "BUY" and current_low <= level.target_price)
+                or (grad.direction == "SELL" and current_high >= level.target_price)
+            )
+            if not touched:
+                continue
+
+            idempotency_key = self.generate_idempotency_key(
+                symbol=symbol,
+                level=level.level,
+                cycle=self.cycle_count,
+            )
+            if idempotency_key in self.processed_order_keys:
+                continue
+
+            logger.info(
+                f"[{symbol}] NÃ­vel {level.level} tocado | "
+                f"alvo=${level.target_price:.6f} | "
+                f"H=${current_high:.6f} | L=${current_low:.6f}. "
+                "Enviando entrada de recuperaÃ§Ã£o a mercado."
+            )
+
+            try:
+                order_result = await self.executor.execute_order(
+                    symbol=symbol,
+                    side=level.side,
+                    order_type="MARKET",
+                    price=current_close,
+                    quantity=level.quantity,
+                    level=level.level,
+                )
+            except Exception as exc:
+                logger.error(
+                    f"[{symbol}] Falha ao enviar nÃ­vel {level.level} Ã  exchange: {exc}"
+                )
+                continue
+
+            if not isinstance(order_result, dict):
+                logger.error(
+                    f"[{symbol}] Resposta invÃ¡lida para nÃ­vel {level.level}: {order_result!r}"
+                )
+                continue
+
+            status = str(order_result.get("status", "")).upper()
+            rejected = {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}
+            if status in rejected:
+                logger.error(
+                    f"[{symbol}] NÃ­vel {level.level} rejeitado pela exchange | "
+                    f"status={status} | resposta={order_result}"
+                )
+                continue
+
+            executed_price = float(
+                order_result.get("average")
+                or order_result.get("price")
+                or current_close
+            )
+            exchange_order_id = str(
+                order_result.get("id")
+                or order_result.get("exchange_order_id")
+                or ""
+            ) or None
+
+            # SÃ³ agora hÃ¡ confirmaÃ§Ã£o local do preenchimento.
+            grad.simulate_fill(
+                level_num=level.level,
+                executed_price=executed_price,
+                order_id=exchange_order_id,
+            )
+            self.processed_order_keys.add(idempotency_key)
+            self.total_trades_count += 1
+            await self.refresh_exchange_protection(symbol, grad)
+
+            logger.info(
+                f"[{symbol}] NÃ­vel {level.level} confirmado | "
+                f"status={status} | preÃ§o=${executed_price:.6f} | "
+                f"ordem={exchange_order_id}"
+            )
+
+            try:
+                await TelegramNotifier.notificar_ordem(order_result)
+            except Exception as exc:
+                logger.warning(
+                    f"[{symbol}] Ordem confirmada, mas Telegram falhou no nÃ­vel {level.level}: {exc}"
+                )
+
+    async def fetch_realized_pnl_from_exchange(
+        self, symbol: str, order_id: Optional[str] = None
+    ) -> tuple[float, float]:
+        if self.paper_mode or not hasattr(self.executor, "client") or self.executor.client is None:
+            return 0.0, 0.0
+
+        try:
+            target_symbol = f"{symbol}:USDT" if ":USDT" not in symbol else symbol
+            if target_symbol not in self.executor.client.markets:
+                target_symbol = symbol
+
+            trades = await self.executor.client.fetch_my_trades(symbol=target_symbol, limit=10)
+            if not trades:
+                return 0.0, 0.0
+
+            total_realized_pnl = 0.0
+            total_fee = 0.0
+            relevant_trades = [t for t in trades if str(t.get("order")) == str(order_id)] if order_id else [trades[-1]]
+
+            for trade in relevant_trades:
+                info = trade.get("info", {})
+                raw_pnl = float(info.get("realizedPnl", 0.0))
+                fee_cost = float(trade.get("fee", {}).get("cost", 0.0) or info.get("commission", 0.0))
+                total_realized_pnl += raw_pnl
+                total_fee += fee_cost
+
+            return total_realized_pnl - total_fee, total_fee
+        except Exception:
+            return 0.0, 0.0
+
+    async def refresh_exchange_protection(
+        self,
+        symbol: str,
+        gradient: LinearGradientManager,
+    ) -> None:
+        """Recria TP/SL reduceOnly na Binance para refletir PM e quantidade atual."""
+        filled_levels = gradient.get_filled_levels()
+        total_quantity = float(sum(level.quantity for level in filled_levels))
+
+        if total_quantity <= 0:
+            logger.warning(
+                f"[{symbol}] ProteÃ§Ãµes nÃ£o criadas: grade sem volume preenchido."
+            )
+            return
+
+        take_profit = gradient.calculate_take_profit()
+        stop_loss = gradient.calculate_stop_loss()
+
+        try:
+            protection = await self.protective_orders.replace_bracket_orders(
+                symbol=symbol,
+                direction=gradient.direction,
+                quantity=total_quantity,
+                take_profit_price=take_profit,
+                stop_loss_price=stop_loss,
+            )
+
+            gradient.take_profit_order_id = protection.take_profit_order_id
+            gradient.stop_loss_order_id = protection.stop_loss_order_id
+
+            logger.info(
+                f"[{symbol}] ProteÃ§Ãµes sincronizadas | "
+                f"TP=${take_profit:.6f} | SL=${stop_loss:.6f} | "
+                f"TP_ID={protection.take_profit_order_id} | "
+                f"SL_ID={protection.stop_loss_order_id}"
+            )
+        except Exception as exc:
+            logger.exception(
+                f"[{symbol}] CRÃTICO: posiÃ§Ã£o aberta sem TP/SL confirmado "
+                f"na exchange: {exc}"
+            )
+
+    async def process_symbol_pipeline(self, symbol: str) -> Optional[tuple[str, float]]:
+        async with self.semaphore:
+            try:
+                candles = await self.feed.fetch_ohlcv(symbol=symbol, timeframe="1m", limit=60)
+                if not candles or len(candles) < 30:
+                    return None
+
+                await save_candles_batch(symbol=symbol, timeframe="1m", candles=candles)
+                df = pd.DataFrame(candles)
+                if "close" not in df.columns or df["close"].empty:
+                    return None
+
+                last_candle = df.iloc[-1]
+                current_close = float(last_candle["close"])
+                current_high = float(last_candle["high"])
+                current_low = float(last_candle["low"])
+
+                # InjeÃ§Ã£o de Contexto no Motor
+                signal = self.decision_engine.analyze(
+                    df=df,
+                    symbol=symbol,
+                    timeframe="1m",
+                    account_context={"daily_drawdown_pct": 0.0},
+                )
+                await save_signal_to_db(signal)
+                current_price = float(df["close"].iloc[-1])
+
+                logger.info(
+                    f"[{symbol}] PreÃ§o: ${current_close:.4f} (H:${current_high:.4f}/L:${current_low:.4f}) | "
+                    f"Sinal: {signal.direction} ({signal.confidence * 100:.1f}%) | Regime: {signal.regime}"
+                )
+
+                # =========================================================================
+                # 1. NOTIFICAÃ‡ÃƒO DO TELEGRAM COM DEBOUNCE
+                # =========================================================================
+                if signal.direction in {"BUY", "SELL"}:
+                    last_time = self.last_signal_sent_time.get(symbol)
+                    last_dir = self.last_signal_direction.get(symbol)
+                    now = datetime.now()
+
+                    is_new_dir = last_dir != signal.direction
+                    is_cooldown_expired = not last_time or (now - last_time).total_seconds() >= 180
+
+                    if is_new_dir or is_cooldown_expired:
+                        try:
+                            sent = await TelegramNotifier.notificar_sinal(signal.to_dict())
+                            if sent:
+                                self.last_signal_sent_time[symbol] = now
+                                self.last_signal_direction[symbol] = signal.direction
+                        except Exception as err_tg:
+                            logger.warning(f"[{symbol}] Falha Telegram sinal: {err_tg}")
+
+                # =========================================================================
+                # 2. ABERTURA DE NOVA GRADE
+                # =========================================================================
+                if signal.direction in {"BUY", "SELL"} and symbol not in self.active_gradients:
+                    qty_per_level = self.calculate_level_quantity(symbol, current_close)
+                    if qty_per_level > 0:
+                        gradient = LinearGradientManager(
+                            symbol=symbol,
+                            direction=signal.direction,
+                            entry_price=current_close,
+                            atr=signal.atr,
+                            num_levels=4,
+                            volume_per_level=qty_per_level,
+                        )
+
+                        self._validate_gradient_invariants(gradient)
+                        l1 = gradient.levels[0]
+
+                        try:
+                            ordem_res = await self.executor.execute_order(
+                                symbol=symbol,
+                                side=l1.side,
+                                order_type="MARKET",
+                                price=l1.target_price,
+                                quantity=l1.quantity,
+                                level=1,
+                            )
+                        except Exception as err_order:
+                            logger.error(f"[{symbol}] Erro ordem Nv.1: {err_order}")
+                            return symbol, current_close
+
+                        if (
+                            isinstance(ordem_res, dict)
+                            and str(ordem_res.get("status", "")).upper()
+                            not in {"REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"}
+                        ):
+                            executed_p = float(
+                                ordem_res.get("average")
+                                or ordem_res.get("price")
+                                or current_close
+                            )
+
+                            exchange_order_id = str(
+                                ordem_res.get("id")
+                                or ordem_res.get("exchange_order_id")
+                                or ordem_res.get("exchangeOrderId")
+                                or ""
+                            ) or None
+
+                            gradient.simulate_fill(
+                                level_num=1,
+                                executed_price=executed_p,
+                                order_id=exchange_order_id,
+                            )
+
+                            self.active_gradients[symbol] = gradient
+                            self.total_trades_count += 1
+
+                            logger.info(
+                                f"[{symbol}] NÃ­vel 1 confirmado | "
+                                f"status={ordem_res.get('status')} | "
+                                f"preÃ§o executado=${executed_p:.8f} | "
+                                f"ordem={exchange_order_id}"
+                            )
+
+                            # ProteÃ§Ã£o Ã© prioridade operacional: TP e SL precisam existir na Binance.
+                            try:
+                                await self.refresh_exchange_protection(symbol, gradient)
+                                logger.info(
+                                    f"[{symbol}] âœ… TP/SL protetivos registrados na Binance Demo."
+                                )
+                            except Exception as protection_exc:
+                                logger.exception(
+                                    f"[{symbol}] ðŸš¨ CRÃTICO: entrada confirmada, mas TP/SL "
+                                    f"nÃ£o foram criados na exchange: {protection_exc}"
+                                )
+
+                            # A falha do Telegram nÃ£o pode impedir a telemetria da estratÃ©gia.
+                            try:
+                                await TelegramNotifier.notificar_ordem(ordem_res)
+                                logger.info(
+                                    f"[{symbol}] ðŸ“² NotificaÃ§Ã£o da ordem enviada ao Telegram."
+                                )
+                            except Exception as telegram_exc:
+                                logger.warning(
+                                    f"[{symbol}] Ordem criada, mas Telegram falhou: {telegram_exc}"
+                                )
+
+                        else:
+                            logger.error(
+                                f"[{symbol}] NÃ­vel 1 nÃ£o confirmado pela Binance. "
+                                f"Resposta recebida: {ordem_res!r}"
+                            )
+
+                # =========================================================================
+                # 3. GESTÃƒO DE GRADE ATIVA â€” AVALIAÃ‡ÃƒO VIA CANDLE EXTREMES (HIGH / LOW)
+                # =========================================================================
+                if symbol in self.active_gradients:
+                    grad = self.active_gradients[symbol]
+                    await self.check_and_fill_gradient_levels(
+                        symbol=symbol,
+                        grad=grad,
+                        current_low=current_low,
+                        current_high=current_high,
+                        current_close=current_price,
+                    )
+
+                    avg_price = grad.calculate_average_price() or grad.entry_price
+                    take_profit = grad.calculate_take_profit()
+                    stop_loss = grad.calculate_stop_loss()
+
+                    # O segundo retorno agora representa o retorno nÃ£o realizado da posiÃ§Ã£o:
+                    # positivo = lucro; negativo = prejuÃ­zo.
+                    is_kill, pnl_pct = grad.check_kill_switch(current_close)
+
+                    # Indicador visual: verde para lucro e vermelho para perda.
+                    pnl_icon = "ðŸŸ¢" if pnl_pct >= 0 else "ðŸ”´"
+                    pnl_label = f"+{pnl_pct:.2f}%" if pnl_pct >= 0 else f"{pnl_pct:.2f}%"
+
+                    filled_levels = grad.get_filled_levels()
+                    total_qty = float(sum(level.quantity for level in filled_levels))
+
+                    logger.info(
+                        f"[{symbol} Grade Ativa] PM: ${avg_price:.4f} | "
+                        f"TP: ${take_profit:.4f} | "
+                        f"Stop: ${stop_loss:.4f} | "
+                        f"Retorno: {pnl_icon} {pnl_label} | "
+                        f"NÃ­veis: {len(filled_levels)}/{grad.num_levels}"
+                    )
+
+                    # TAKE PROFIT: Avalia se a mÃ¡xima (Long) ou mÃ­nima (Short) atingiu o alvo dentro do candle
+                    is_tp_hit = (
+                        (grad.direction == "BUY" and current_high >= take_profit)
+                        or (grad.direction == "SELL" and current_low <= take_profit)
+                    )
+
+                        # GATILHO DE TAKE PROFIT
+                    if is_tp_hit:
+                        await self.finalize_gradient_exit(
+                            symbol=symbol,
+                            grad=grad,
+                            reason="TAKE_PROFIT_ALCANCADO",
+                            reference_exit_price=take_profit,
+                        )
+                        return symbol, current_close
+
+                    # GATILHO DE KILL SWITCH / STOP LOSS
+                    if is_kill:
+                        loss_pct = abs(min(pnl_pct, 0.0))
+                        await self.finalize_gradient_exit(
+                            symbol=symbol,
+                            grad=grad,
+                            reason=f"KILL_SWITCH_DRAWDOWN_{loss_pct:.1f}%",
+                            reference_exit_price=current_close,
+                        )
+                        return symbol, current_close
+
+                        reference_exit_price = take_profit
+
+                        logger.info(
+                            f"ðŸŽ¯ TAKE PROFIT DETECTADO EM {symbol} | "
+                            f"Alvo=${reference_exit_price:.8f} | "
+                            f"PM=${avg_price:.8f} | "
+                            f"Qtd={total_qty:.8f}"
+                        )
+
+                        close_order = await self.close_position_on_exchange(
+                            symbol=symbol,
+                            direction=grad.direction,
+                            total_quantity=total_qty,
+                            exit_price=reference_exit_price,
+                        )
+
+                        # Nunca contabilize, notifique ou remova a grade se a saÃ­da nÃ£o foi confirmada.
+                        if not isinstance(close_order, dict):
+                            logger.critical(
+                                f"[{symbol}] ðŸš¨ TP detectado, porÃ©m o fechamento nÃ£o foi confirmado "
+                                "pela Binance. A grade e as proteÃ§Ãµes serÃ£o preservadas para nova tentativa."
+                            )
+                            return symbol, current_close
+
+                        close_status = str(close_order.get("status", "")).upper()
+                        close_filled_qty = float(
+                            close_order.get("filled")
+                            or close_order.get("executedQty")
+                            or 0.0
+                        )
+
+                        rejected_statuses = {
+                            "REJECTED",
+                            "CANCELED",
+                            "CANCELLED",
+                            "EXPIRED",
+                            "FAILED",
+                        }
+
+                        expected_tolerance = max(total_qty * 0.001, 1e-12)
+
+                        if (
+                            close_status in rejected_statuses
+                            or close_filled_qty <= 0.0
+                            or close_filled_qty < (total_qty - expected_tolerance)
+                        ):
+                            logger.critical(
+                                f"[{symbol}] ðŸš¨ TP nÃ£o confirmado integralmente | "
+                                f"status={close_status or 'DESCONHECIDO'} | "
+                                f"executado={close_filled_qty:.8f} | "
+                                f"esperado={total_qty:.8f} | "
+                                f"ordem={close_order!r}. "
+                                "A grade serÃ¡ mantida para impedir perda de controle da posiÃ§Ã£o."
+                            )
+                            return symbol, current_close
+
+                        order_id_ex = str(
+                            close_order.get("id")
+                            or close_order.get("exchange_order_id")
+                            or close_order.get("exchangeOrderId")
+                            or ""
+                        ) or None
+
+                        real_exit_price = float(
+                            close_order.get("average")
+                            or close_order.get("price")
+                            or reference_exit_price
+                        )
+
+                        estimated_pnl = (
+                            (real_exit_price - avg_price) * close_filled_qty
+                            if grad.direction == "BUY"
+                            else (avg_price - real_exit_price) * close_filled_qty
+                        )
+
+                        exchange_pnl, fees = await self.fetch_realized_pnl_from_exchange(
+                            symbol=symbol,
+                            order_id=order_id_ex,
+                        )
+
+                        # Se existe uma ordem confirmada, mas a API de trades ainda nÃ£o propagou o
+                        # realizedPnl, usa-se uma estimativa temporÃ¡ria baseada no fill verdadeiro.
+                        # O evento deve ser persistido para posterior reconciliaÃ§Ã£o com a exchange.
+                        final_pnl = (
+                            float(exchange_pnl)
+                            if order_id_ex is not None and float(exchange_pnl) != 0.0
+                            else float(estimated_pnl)
+                        )
+
+                        self.take_profit_count += 1
+                        self.take_profit_usd = round(
+                            self.take_profit_usd + max(final_pnl, 0.0),
+                            8,
+                        )
+
+                        try:
+                            await self.protective_orders.clear_symbol(symbol)
+                        except Exception as cleanup_exc:
+                            logger.warning(
+                                f"[{symbol}] TP confirmado, mas nÃ£o foi possÃ­vel limpar "
+                                f"TP/SL remanescente: {cleanup_exc}"
+                            )
+
+                        try:
+                            await TelegramNotifier.notificar_fechamento(
+                                symbol=symbol,
+                                side=grad.direction,
+                                avg_price=avg_price,
+                                exit_price=real_exit_price,
+                                quantity=close_filled_qty,
+                                motivo="TAKE_PROFIT_ALCANCADO",
+                            )
+                        except Exception as err_tg:
+                            logger.warning(
+                                f"[{symbol}] TP confirmado na exchange, mas falhou a notificaÃ§Ã£o "
+                                f"do Telegram: {err_tg}"
+                            )
+
+                        self.active_gradients.pop(symbol, None)
+
+                        logger.info(
+                            f"[{symbol}] âœ… TAKE PROFIT CONFIRMADO | "
+                            f"ordem={order_id_ex} | "
+                            f"PM=${avg_price:.8f} | "
+                            f"SaÃ­da=${real_exit_price:.8f} | "
+                            f"Qtd={close_filled_qty:.8f} | "
+                            f"PnL=${final_pnl:.8f} | "
+                            f"Taxas=${fees:.8f}"
+                        )
+
+                        return symbol, current_close
+
+
+                    # KILL SWITCH / STOP LOSS
+                    if is_kill:
+                        if total_qty <= 0:
+                            logger.error(
+                                f"[{symbol}] Kill-switch detectado, mas a grade nÃ£o possui "
+                                "quantidade preenchida. A grade serÃ¡ removida para evitar estado inconsistente."
+                            )
+                            self.active_gradients.pop(symbol, None)
+                            return symbol, current_close
+
+                        # pnl_pct Ã© negativo quando a posiÃ§Ã£o estÃ¡ perdendo.
+                        # loss_pct Ã© usado apenas para logs e para o motivo do encerramento.
+                        loss_pct = abs(min(pnl_pct, 0.0))
+                        reference_exit_price = current_close
+                        exit_reason = f"KILL_SWITCH_DRAWDOWN_{loss_pct:.1f}%"
+
+                        logger.warning(
+                            f"ðŸ›‘ KILL-SWITCH DETECTADO EM {symbol} | "
+                            f"Retorno={pnl_pct:.2f}% | "
+                            f"Perda={loss_pct:.2f}% | "
+                            f"PM=${avg_price:.8f} | "
+                            f"PreÃ§o referÃªncia=${reference_exit_price:.8f} | "
+                            f"Qtd={total_qty:.8f}"
+                        )
+
+                        close_order = await self.close_position_on_exchange(
+                            symbol=symbol,
+                            direction=grad.direction,
+                            total_quantity=total_qty,
+                            exit_price=reference_exit_price,
+                        )
+
+                        # NÃ£o remover a grade nem contabilizar o SL se a ordem nÃ£o retornou.
+                        if not isinstance(close_order, dict):
+                            logger.critical(
+                                f"[{symbol}] ðŸš¨ Kill-switch detectado, porÃ©m a ordem de saÃ­da nÃ£o "
+                                "foi confirmada pela Binance. A grade continuarÃ¡ ativa para nova tentativa."
+                            )
+                            return symbol, current_close
+
+                        close_status = str(close_order.get("status", "")).upper()
+                        close_filled_qty = float(
+                            close_order.get("filled")
+                            or close_order.get("filled_quantity")
+                            or close_order.get("executedQty")
+                            or 0.0
+                        )
+
+                        real_exit_price = float(
+                            close_order.get("average")
+                            or close_order.get("average_price")
+                            or close_order.get("price")
+                            or reference_exit_price
+                        )
+
+                        rejected_statuses = {
+                            "REJECTED",
+                            "CANCELED",
+                            "CANCELLED",
+                            "EXPIRED",
+                            "FAILED",
+                        }
+
+                        expected_tolerance = max(total_qty * 0.001, 1e-12)
+
+                        if (
+                            close_status in rejected_statuses
+                            or close_filled_qty <= 0.0
+                            or close_filled_qty < (total_qty - expected_tolerance)
+                        ):
+                            logger.critical(
+                                f"[{symbol}] ðŸš¨ Kill-switch sem fechamento integral confirmado | "
+                                f"status={close_status or 'DESCONHECIDO'} | "
+                                f"executado={close_filled_qty:.8f} | "
+                                f"esperado={total_qty:.8f} | "
+                                f"ordem={close_order!r}. "
+                                "A grade serÃ¡ mantida para impedir divergÃªncia entre estado local e Binance."
+                            )
+                            return symbol, current_close
+
+                        order_id_ex = str(
+                            close_order.get("id")
+                            or close_order.get("exchange_order_id")
+                            or close_order.get("exchangeOrderId")
+                            or ""
+                        ) or None
+
+                        real_exit_price = float(
+                            close_order.get("average")
+                            or close_order.get("average_price")
+                            or close_order.get("price")
+                            or reference_exit_price
+                        )
+
+                        estimated_pnl = (
+                            (real_exit_price - avg_price) * close_filled_qty
+                            if grad.direction == "BUY"
+                            else (avg_price - real_exit_price) * close_filled_qty
+                        )
+
+                        exchange_pnl, fees = await self.fetch_realized_pnl_from_exchange(
+                            symbol=symbol,
+                            order_id=order_id_ex,
+                        )
+
+                        # Na Demo, a API de trades pode levar alguns instantes para expor realizedPnl.
+                        # Enquanto isso, utiliza o PnL pelo preÃ§o mÃ©dio efetivamente reportado pela ordem.
+                        final_pnl = (
+                            float(exchange_pnl)
+                            if order_id_ex is not None and float(exchange_pnl) != 0.0
+                            else float(estimated_pnl)
+                        )
+
+                        self.stop_loss_count += 1
+                        self.stop_loss_usd = round(
+                            self.stop_loss_usd + abs(min(final_pnl, 0.0)),
+                            8,
+                        )
+
+                        try:
+                            await self.protective_orders.clear_symbol(symbol)
+                        except Exception as cleanup_exc:
+                            logger.warning(
+                                f"[{symbol}] Kill-switch confirmado, mas nÃ£o foi possÃ­vel limpar "
+                                f"TP/SL remanescente: {cleanup_exc}"
+                            )
+
+                        try:
+                            await TelegramNotifier.notificar_fechamento(
+                                symbol=symbol,
+                                side=grad.direction,
+                                avg_price=avg_price,
+                                exit_price=real_exit_price,
+                                quantity=close_filled_qty,
+                                motivo=exit_reason,
+                            )
+                        except Exception as err_tg:
+                            logger.warning(
+                                f"[{symbol}] Kill-switch confirmado na exchange, mas falhou a "
+                                f"notificaÃ§Ã£o do Telegram: {err_tg}"
+                            )
+
+                        self.active_gradients.pop(symbol, None)
+
+                        logger.warning(
+                            f"[{symbol}] âœ… KILL-SWITCH CONFIRMADO | "
+                            f"ordem={order_id_ex} | "
+                            f"PM=${avg_price:.8f} | "
+                            f"SaÃ­da=${real_exit_price:.8f} | "
+                            f"Qtd={close_filled_qty:.8f} | "
+                            f"PnL=${final_pnl:.8f} | "
+                            f"Taxas=${fees:.8f}"
+                        )
+
+                        return symbol, current_close
+
+                return symbol, current_close
+
+            except Exception as exc:
+                logger.exception(f"[{symbol}] Erro no pipeline: {exc}")
+                return None
+
+    async def check_and_send_heartbeat(self, current_prices: Dict[str, float]) -> None:
+        now = datetime.now()
+        elapsed_seconds = (now - self.last_heartbeat_time).total_seconds()
+        if elapsed_seconds < 1800:
+            return
+
+        pos_info: list[dict[str, object]] = []
+        for sym, grad in self.active_gradients.items():
+            current_price = current_prices.get(sym, grad.entry_price)
+            avg_price = grad.calculate_average_price() or grad.entry_price
+            take_profit = grad.calculate_take_profit()
+            _, drawdown_pct = grad.check_kill_switch(current_price)
+            filled_count = len(grad.get_filled_levels())
+            pos_info.append(
+                {
+                    "symbol": sym,
+                    "direction": grad.direction,
+                    "avg_price": avg_price,
+                    "tp_price": take_profit,
+                    "dd_pct": drawdown_pct,
+                    "level": filled_count,
+                }
+            )
+
+        window_cycles = max(0, self.cycle_count - self.last_heartbeat_cycle_count)
+        window_trades = max(0, self.total_trades_count - self.last_heartbeat_trades_count)
+        window_takeprofits = max(0, self.take_profit_count - self.last_heartbeat_tp_count)
+        window_stoplosses = max(0, self.stop_loss_count - self.last_heartbeat_sl_count)
+
+        window_tp_usd = round(self.take_profit_usd - self.last_heartbeat_tp_usd, 8)
+        window_sl_usd = round(self.stop_loss_usd - self.last_heartbeat_sl_usd, 8)
+        window_net_usd = round(window_tp_usd - window_sl_usd, 8)
+        total_net_usd = round(self.take_profit_usd - self.stop_loss_usd, 8)
+
+        stats_payload = {
+            "total_cycles": self.cycle_count,
+            "total_trades": self.total_trades_count,
+            "take_profit_count": self.take_profit_count,
+            "stop_loss_count": self.stop_loss_count,
+            "take_profit_usd": self.take_profit_usd,
+            "stop_loss_usd": self.stop_loss_usd,
+            "active_positions": pos_info,
+            "window_cycles": window_cycles,
+            "window_trades": window_trades,
+            "window_take_profit_count": window_takeprofits,
+            "window_stop_loss_count": window_stoplosses,
+            "window_take_profit_usd": window_tp_usd,
+            "window_stop_loss_usd": window_sl_usd,
+            "window_net_usd": window_net_usd,
+            "total_net_usd": total_net_usd,
+            "daily_drawdown_pct": 0.0,
+            "ai_quant_enabled": True,
+        }
+
+        try:
+            await TelegramNotifier.notificar_heartbeat(stats_payload)
+            self.last_heartbeat_time = now
+            self.last_heartbeat_cycle_count = self.cycle_count
+            self.last_heartbeat_trades_count = self.total_trades_count
+            self.last_heartbeat_tp_count = self.take_profit_count
+            self.last_heartbeat_sl_count = self.stop_loss_count
+            self.last_heartbeat_tp_usd = self.take_profit_usd
+            self.last_heartbeat_sl_usd = self.stop_loss_usd
+            logger.info(
+                f"Heartbeat enviado | Janela: {window_cycles} ciclos, {window_trades} ordens | PnL: ${window_net_usd:.6f}"
+            )
+        except Exception as exc:
+            logger.warning(f"Falha ao enviar Heartbeat: {exc}")
+
+    async def run_single_cycle(self) -> None:
+        self.cycle_count += 1
+        logger.info(f"ðŸ”„ [Ciclo #{self.cycle_count}] Iniciando varredura para {len(self.watchlist)} ativos...")
+        tasks = [self.process_symbol_pipeline(sym) for sym in self.watchlist]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        current_prices: Dict[str, float] = {}
+        for res in results:
+            if isinstance(res, tuple):
+                sym, p = res
+                current_prices[sym] = p
+
+        await self.check_and_send_heartbeat(current_prices)
+
+    async def start(self, interval_seconds: int = 60) -> None:
+        try:
+            while True:
+                await self.run_single_cycle()
+                logger.info(f"â± Ciclo concluÃ­do. Aguardando {interval_seconds}s para o prÃ³ximo...")
+                await asyncio.sleep(interval_seconds)
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            logger.info("Encerrando ciclo autÃ´nomo com liberaÃ§Ã£o de recursos...")
+        finally:
+            await self.feed.close()
+            await self.executor.close()
+
+
+if __name__ == "__main__":
+    agent = CriptoBoltAgent()
+    asyncio.run(agent.start(interval_seconds=60))

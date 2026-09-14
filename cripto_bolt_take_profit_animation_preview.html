@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cripto Bolt — Take Profit Animado</title>
+  <style>
+    :root {
+      --bg: #07120f;
+      --green: #59f3ad;
+      --green-dark: #0e5e3d;
+      --white: #edfff6;
+      --muted: #9ebcaf;
+      --gold: #ffd66b;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--white);
+      background:
+        radial-gradient(circle at 50% -10%, rgba(0, 213, 126, .20), transparent 38%),
+        linear-gradient(180deg, #07120f, #081611);
+    }
+    header {
+      width: min(760px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 36px 0 16px;
+    }
+    h1 { margin: 0; font-size: clamp(1.5rem, 4vw, 2.2rem); letter-spacing: -.04em; }
+    header p { margin: 9px 0 0; color: var(--muted); line-height: 1.5; }
+    main { width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 10px 0 52px; }
+    .preview {
+      border: 1px solid rgba(118, 255, 185, .18);
+      background: linear-gradient(145deg, rgba(18, 47, 37, .9), rgba(7, 23, 17, .95));
+      border-radius: 20px;
+      padding: 18px;
+    }
+    .phone {
+      max-width: 390px;
+      margin: 0 auto;
+      border: 8px solid #12211b;
+      border-radius: 27px;
+      background: linear-gradient(180deg, #17241f, #0a120e);
+      padding: 12px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.4);
+    }
+    .telegram-top {
+      color: #c8ddd3;
+      font-size: .72rem;
+      display: flex;
+      justify-content: space-between;
+      padding: 1px 2px 12px;
+      opacity: .78;
+    }
+    .bubble {
+      position: relative;
+      overflow: hidden;
+      border-radius: 12px 12px 12px 3px;
+      background: #173d2e;
+      padding: 14px 14px 10px;
+      box-shadow: 0 8px 20px rgba(0,0,0,.22);
+    }
+    .bubble::after {
+      content: "";
+      position: absolute;
+      left: -7px;
+      bottom: 0;
+      width: 18px;
+      height: 18px;
+      background: #173d2e;
+      clip-path: polygon(100% 0, 100% 100%, 0 100%);
+    }
+
+    /* Hero da imagem do Cripto Bolt */
+    .bolt-hero {
+      height: 230px;
+      border-radius: 11px;
+      overflow: hidden;
+      position: relative;
+      background: #091b13;
+      isolation: isolate;
+    }
+    .bolt-hero::before {
+      content: "";
+      position: absolute;
+      inset: -28%;
+      z-index: 2;
+      pointer-events: none;
+      background: linear-gradient(112deg, transparent 36%, rgba(112,255,184,.68) 49%, transparent 62%);
+      mix-blend-mode: screen;
+      animation: shine 2.5s ease-in-out infinite;
+    }
+    .bolt-hero::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+      border: 1px solid rgba(139,255,198,.55);
+      border-radius: 11px;
+      box-shadow: inset 0 0 26px rgba(60,255,157,.32), 0 0 21px rgba(60,255,157,.22);
+      animation: frame-pulse 1.7s ease-in-out infinite;
+    }
+    .bolt-image {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+      object-position: center;
+      filter: saturate(1.12) contrast(1.08);
+      transform: scale(1.04);
+      animation: bolt-breath 2.8s ease-in-out infinite;
+    }
+    .tp-badge {
+      position: absolute;
+      z-index: 4;
+      top: 12px;
+      left: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      color: #ecfff5;
+      font-size: .73rem;
+      font-weight: 900;
+      letter-spacing: .08em;
+      background: rgba(3, 37, 22, .79);
+      border: 1px solid rgba(89,243,173,.8);
+      box-shadow: 0 0 18px rgba(89,243,173,.45);
+      animation: badge-pop 2.8s ease-in-out infinite;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--green);
+      border-radius: 50%;
+      box-shadow: 0 0 12px var(--green);
+      animation: dot-pulse 1s ease-in-out infinite;
+    }
+    .profit-ribbon {
+      position: absolute;
+      z-index: 4;
+      right: 10px;
+      bottom: 10px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      color: #032c19;
+      background: linear-gradient(135deg, #b4ffce, #58f1ab);
+      font-size: .79rem;
+      font-weight: 900;
+      box-shadow: 0 8px 22px rgba(0,0,0,.3);
+      animation: ribbon-rise 2.8s cubic-bezier(.2,1.4,.35,1) infinite;
+    }
+    .divider { height: 1px; background: rgba(162,255,207,.25); margin: 11px 0; }
+    .title { font-weight: 850; letter-spacing: .01em; font-size: .9rem; }
+    .row { display: flex; justify-content: space-between; gap: 8px; margin: 7px 0; font-size: .81rem; }
+    .row span { color: #b8d3c6; }
+    .row strong { text-align: right; font-weight: 750; }
+    .pnl { color: var(--green); }
+    .foot { color: #aac6b8; opacity: .76; text-align: right; font-size: .7rem; margin-top: 10px; }
+    .actions { display: flex; justify-content: center; gap: 10px; margin-top: 18px; }
+    button { border: 1px solid rgba(89,243,173,.35); border-radius: 9px; padding: 10px 14px; color: var(--white); background: rgba(12,55,36,.85); cursor: pointer; font-weight: 800; }
+    button:hover { background: rgba(25,93,59,.9); }
+
+    @keyframes bolt-breath { 0%,100% { transform: scale(1.04); filter: saturate(1.08) contrast(1.05) brightness(1); } 50% { transform: scale(1.10); filter: saturate(1.22) contrast(1.12) brightness(1.1); } }
+    @keyframes shine { 0%,25% { transform: translateX(-70%) rotate(3deg); opacity: 0; } 42%,62% { opacity: .85; } 83%,100% { transform: translateX(70%) rotate(3deg); opacity: 0; } }
+    @keyframes frame-pulse { 50% { box-shadow: inset 0 0 40px rgba(60,255,157,.55), 0 0 32px rgba(60,255,157,.45); } }
+    @keyframes dot-pulse { 50% { transform: scale(1.75); opacity: .48; } }
+    @keyframes badge-pop { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+    @keyframes ribbon-rise { 0%,18% { transform: translateY(40px); opacity: 0; } 31%,79% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(-4px); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cripto Bolt — TP com imagem animada</h1>
+    <p>A imagem do Cripto Bolt substitui o círculo animado. O efeito combina zoom suave, brilho varrendo a arte, moldura neon, indicador ativo e faixa de lucro.</p>
+  </header>
+
+  <main>
+    <section class="preview">
+      <div class="phone">
+        <div class="telegram-top"><span>Cripto Bolt</span><span>agora</span></div>
+        <div class="bubble animated-card">
+          <div class="bolt-hero">
+            <img class="bolt-image" src="cripto-bolt.jpg" alt="Cripto Bolt" />
+            <div class="tp-badge"><i class="status-dot"></i> TAKE PROFIT</div>
+            <div class="profit-ribbon">✓ LUCRO CONFIRMADO</div>
+          </div>
+          <div class="divider"></div>
+          <div class="title">🏁 CICLO ENCERRADO — TAKE PROFIT</div>
+          <div class="row"><span>Par</span><strong>XLM/USDT • LONG</strong></div>
+          <div class="row"><span>Resultado</span><strong class="pnl">🟢 +$0.015600 USDT</strong></div>
+          <div class="row"><span>Equivalente</span><strong class="pnl">🟢 +R$0,08</strong></div>
+          <div class="row"><span>Ordem</span><strong>718160642</strong></div>
+          <div class="foot">Binance Futures Demo • Cripto Bolt</div>
+        </div>
+      </div>
+      <div class="actions"><button id="replay" type="button">↻ Reproduzir animação</button></div>
+    </section>
+  </main>
+
+  <script>
+    document.getElementById('replay').addEventListener('click', () => {
+      const card = document.querySelector('.animated-card');
+      const clone = card.cloneNode(true);
+      card.replaceWith(clone);
+    });
+  </script>
+</body>
+</html>

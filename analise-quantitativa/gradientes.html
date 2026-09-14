@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gradiente Linear, Geométrico e Híbrido</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body { background:#0f1115; color:#e7e9ec; font-family: 'Segoe UI', sans-serif; }
+  .card { background:#181b21; border:1px solid #2a2e37; }
+  .nav-tabs .nav-link { color:#9aa4b2; }
+  .nav-tabs .nav-link.active { background:#20242c; color:#fff; border-color:#2a2e37; }
+  canvas { background:#12151b; border-radius:8px; width:100%; height:420px; display:block; }
+  .metric-box { background:#20242c; border-radius:8px; padding:10px 14px; }
+  .metric-value { font-size:1.4rem; font-weight:700; }
+  .btn-quant { border:none; color:#fff; }
+  .btn-linear { background:#3b6fd4; } .btn-linear:hover { background:#2f59ab; }
+  .btn-geo { background:#e0663e; } .btn-geo:hover { background:#b74f2f; }
+  .btn-hybrid { background:#7e57c2; } .btn-hybrid:hover { background:#5f3fa0; }
+  .desc-box { border-left:4px solid #3b6fd4; padding-left:14px; }
+  .desc-geo { border-left-color:#e0663e; }
+  .desc-hybrid { border-left-color:#7e57c2; }
+  footer { color:#5f6570; font-size:0.85rem; }
+  .legend-dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px; }
+</style>
+</head>
+<body>
+<div class="container py-4">
+
+  <h1 class="mb-1">Gradiente Linear vs Geométrico vs Híbrido</h1>
+  <p class="text-secondary mb-4">Simulação visual de gestão de posição escalonada — cada estratégia define como o volume cresce a cada novo nível de entrada.</p>
+
+  <ul class="nav nav-tabs" id="tabs" role="tablist">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#linear" type="button" id="tab-linear">1. Gradiente Linear</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#geometrico" type="button" id="tab-geo">2. Gradiente Geométrico</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#hibrido" type="button" id="tab-hybrid">3. Gradiente Híbrido</button></li>
+  </ul>
+
+  <div class="tab-content border border-top-0 rounded-bottom p-3" style="background:#141720;">
+
+    <!-- LINEAR -->
+    <div class="tab-pane fade show active" id="linear">
+      <div class="row g-3 mt-2">
+        <div class="col-lg-8">
+          <canvas id="cvLinear"></canvas>
+          <div class="d-flex gap-3 mt-2 align-items-center">
+            <button class="btn btn-quant btn-linear btn-sm" onclick="strategies.linear.play()">▶ Reproduzir</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="strategies.linear.reset()">⟲ Reiniciar</button>
+            <span class="small"><span class="legend-dot" style="background:#3b6fd4;"></span>Entradas &nbsp; <span class="legend-dot" style="background:#f0ad4e;"></span>Preço médio &nbsp; <span class="legend-dot" style="background:#6fd48b;"></span>Preço atual</span>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card p-3 h-100">
+            <h3 class="h5">Como funciona</h3>
+            <p class="desc-box small">No gradiente linear, cada novo nível de entrada usa <strong>o mesmo volume</strong>. O preço médio se move de forma proporcional e previsível a cada camada adicionada, o que facilita o cálculo de risco e o dimensionamento do stop.</p>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Progressão do volume</div>
+              <div class="metric-value" style="color:#3b6fd4;" id="linearProg">1 - 1 - 1 - 1 - 1</div>
+            </div>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Preço médio atual</div>
+              <div class="metric-value" id="linearAvg">—</div>
+            </div>
+            <div class="metric-box">
+              <div class="small text-secondary">Exposição total (lotes)</div>
+              <div class="metric-value" id="linearExp">0</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GEOMÉTRICO -->
+    <div class="tab-pane fade" id="geometrico">
+      <div class="row g-3 mt-2">
+        <div class="col-lg-8">
+          <canvas id="cvGeo"></canvas>
+          <div class="d-flex gap-3 mt-2 align-items-center">
+            <button class="btn btn-quant btn-geo btn-sm" onclick="strategies.geo.play()">▶ Reproduzir</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="strategies.geo.reset()">⟲ Reiniciar</button>
+            <span class="small"><span class="legend-dot" style="background:#e0663e;"></span>Entradas &nbsp; <span class="legend-dot" style="background:#f0ad4e;"></span>Preço médio &nbsp; <span class="legend-dot" style="background:#6fd48b;"></span>Preço atual</span>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card p-3 h-100">
+            <h3 class="h5">Como funciona</h3>
+            <p class="desc-box desc-geo small">No gradiente geométrico, o volume <strong>dobra (ou multiplica por um fator M)</strong> a cada novo nível, seguindo uma progressão geométrica (1, 2, 4, 8...). Isso puxa o preço médio muito mais rápido para perto do preço atual, mas aumenta a exposição de forma exponencial<sup>[web:13][web:16]</sup>.</p>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Progressão do volume</div>
+              <div class="metric-value" style="color:#e0663e;" id="geoProg">1 - 2 - 4 - 8 - 16</div>
+            </div>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Preço médio atual</div>
+              <div class="metric-value" id="geoAvg">—</div>
+            </div>
+            <div class="metric-box">
+              <div class="small text-secondary">Exposição total (lotes)</div>
+              <div class="metric-value" id="geoExp">0</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HÍBRIDO -->
+    <div class="tab-pane fade" id="hibrido">
+      <div class="row g-3 mt-2">
+        <div class="col-lg-8">
+          <canvas id="cvHybrid"></canvas>
+          <div class="d-flex gap-3 mt-2 align-items-center">
+            <button class="btn btn-quant btn-hybrid btn-sm" onclick="strategies.hybrid.play()">▶ Reproduzir</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="strategies.hybrid.reset()">⟲ Reiniciar</button>
+            <span class="small"><span class="legend-dot" style="background:#7e57c2;"></span>Entradas &nbsp; <span class="legend-dot" style="background:#f0ad4e;"></span>Preço médio &nbsp; <span class="legend-dot" style="background:#6fd48b;"></span>Preço atual</span>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card p-3 h-100">
+            <h3 class="h5">Como funciona</h3>
+            <p class="desc-box desc-hybrid small">O gradiente híbrido combina os dois: começa <strong>linear</strong> nos primeiros níveis (risco controlado) e passa a crescer <strong>geometricamente</strong> apenas nos níveis mais profundos, quando a chance de reversão é avaliada como maior — um meio-termo entre segurança e velocidade de recuperação do preço médio<sup>[web:10][web:15]</sup>.</p>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Progressão do volume</div>
+              <div class="metric-value" style="color:#7e57c2;" id="hybridProg">1 - 1 - 2 - 4 - 8</div>
+            </div>
+            <div class="metric-box mb-2">
+              <div class="small text-secondary">Preço médio atual</div>
+              <div class="metric-value" id="hybridAvg">—</div>
+            </div>
+            <div class="metric-box">
+              <div class="small text-secondary">Exposição total (lotes)</div>
+              <div class="metric-value" id="hybridExp">0</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="row mt-4 g-3">
+    <div class="col-12">
+      <div class="card p-3">
+        <h3 class="h5">Comparativo rápido</h3>
+        <div class="table-responsive">
+        <table class="table table-dark table-sm mb-0">
+          <thead><tr><th>Estratégia</th><th>Crescimento do volume</th><th>Velocidade de recuperação do preço médio</th><th>Risco de exposição</th><th>Melhor uso</th></tr></thead>
+          <tbody>
+            <tr><td><span class="legend-dot" style="background:#3b6fd4;"></span>Linear</td><td>Constante (fixo)</td><td>Lenta e previsível</td><td>Baixo/controlado</td><td>Mercados com volatilidade moderada e gestão de risco rígida</td></tr>
+            <tr><td><span class="legend-dot" style="background:#e0663e;"></span>Geométrico</td><td>Exponencial (x2, x4, x8...)</td><td>Rápida</td><td>Alto — pode escalar até o stop-out<sup>[web:16]</sup></td><td>Tendências fortes com reversão esperada no curto prazo</td></tr>
+            <tr><td><span class="legend-dot" style="background:#7e57c2;"></span>Híbrido</td><td>Linear no início, geométrico no fim</td><td>Moderada</td><td>Médio — controlado por limite de níveis geométricos</td><td>Equilíbrio entre segurança inicial e recuperação em movimentos extremos</td></tr>
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="mt-4 text-center">Simulação educacional — animações e valores ilustrativos, não constituem recomendação de investimento.</footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+function buildStrategy(canvasId, volumes, elAvg, elExp, priceStart, priceStep, entryColor) {
+  const canvas = document.getElementById(canvasId);
+  const ctx = canvas.getContext('2d');
+  let W, H;
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const cw = rect.width || canvas.parentElement.clientWidth || 600;
+    const ch = 420;
+    W = canvas.width = cw * devicePixelRatio;
+    H = canvas.height = ch * devicePixelRatio;
+    canvas.style.height = ch + 'px';
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  const levels = volumes.map((v, i) => ({
+    price: priceStart - i * priceStep,
+    volume: v,
+    filled: false
+  }));
+
+  let step = 0;
+  let animId = null;
+  let entries = [];
+
+  function priceToY(price) {
+    const minP = priceStart - (levels.length) * priceStep - priceStep;
+    const maxP = priceStart + priceStep;
+    const t = (price - minP) / (maxP - minP);
+    return H - t * (H * 0.85) - H * 0.05;
+  }
+
+  function avgPrice() {
+    if (entries.length === 0) return null;
+    let sumPV = 0, sumV = 0;
+    entries.forEach(e => { sumPV += e.price * e.volume; sumV += e.volume; });
+    return sumPV / sumV;
+  }
+
+  function totalExposure() {
+    return entries.reduce((a, e) => a + e.volume, 0);
+  }
+
+  function draw() {
+    resize();
+    const cw = canvas.clientWidth || 600, ch = canvas.clientHeight || 420;
+    ctx.clearRect(0, 0, W, H);
+    ctx.save();
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+
+    levels.forEach((lvl) => {
+      const y = priceToY(lvl.price) / devicePixelRatio;
+      ctx.strokeStyle = lvl.filled ? entryColor : 'rgba(154,164,178,0.2)';
+      ctx.lineWidth = lvl.filled ? 1.5 : 1;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath();
+      ctx.moveTo(60, y);
+      ctx.lineTo(cw - 20, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#9aa4b2';
+      ctx.font = '11px Segoe UI';
+      ctx.fillText(lvl.price.toFixed(1), 5, y + 4);
+    });
+
+    // simulated price path
+    ctx.strokeStyle = '#6fd48b';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    const totalSteps = levels.length * 8 + 20;
+    const pathEndX = 60 + Math.min(step, totalSteps) / totalSteps * (cw - 80);
+    for (let x = 60; x <= pathEndX; x++) {
+      const progress = (x - 60) / (cw - 80);
+      const simPrice = priceStart - progress * (levels.length * priceStep);
+      const y = priceToY(simPrice) / devicePixelRatio;
+      if (x === 60) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    if (pathEndX > 60) {
+      const lastProgress = (pathEndX - 60) / (cw - 80);
+      const lastPrice = priceStart - lastProgress * (levels.length * priceStep);
+      const cy = priceToY(lastPrice) / devicePixelRatio;
+      ctx.beginPath();
+      ctx.arc(pathEndX, cy, 5, 0, Math.PI*2);
+      ctx.fillStyle = '#6fd48b';
+      ctx.fill();
+    }
+
+    entries.forEach((e, idx) => {
+      const y = priceToY(e.price) / devicePixelRatio;
+      const x = 60 + idx * ((cw - 100) / Math.max(levels.length,1)) + 20;
+      const r = 6 + e.volume * 1.8;
+      const grad = ctx.createRadialGradient(x, y, 1, x, y, r);
+      grad.addColorStop(0, entryColor);
+      grad.addColorStop(1, entryColor + 'aa');
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fillStyle = entryColor;
+      ctx.globalAlpha = 0.85;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 11px Segoe UI';
+      ctx.textAlign = 'center';
+      ctx.fillText(e.volume + 'x', x, y - r - 6);
+      ctx.textAlign = 'left';
+    });
+
+    const avg = avgPrice();
+    if (avg !== null) {
+      const y = priceToY(avg) / devicePixelRatio;
+      ctx.strokeStyle = '#f0ad4e';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([2,2]);
+      ctx.beginPath();
+      ctx.moveTo(60, y);
+      ctx.lineTo(cw - 20, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#f0ad4e';
+      ctx.font = 'bold 11px Segoe UI';
+      ctx.fillText('Preço médio: ' + avg.toFixed(2), cw - 190, y - 6);
+    }
+
+    ctx.restore();
+  }
+
+  function tick() {
+    step += 1;
+    const levelIndex = Math.floor(step / 8);
+    if (levelIndex < levels.length && !levels[levelIndex].filled) {
+      levels[levelIndex].filled = true;
+      entries.push({ price: levels[levelIndex].price, volume: levels[levelIndex].volume });
+      const avg = avgPrice();
+      elAvg.textContent = avg ? avg.toFixed(2) : '—';
+      elExp.textContent = totalExposure();
+    }
+    draw();
+    if (step < levels.length * 8 + 20) {
+      animId = requestAnimationFrame(tick);
+    } else {
+      animId = null;
+    }
+  }
+
+  return {
+    play() {
+      if (animId) cancelAnimationFrame(animId);
+      this.reset();
+      tick();
+    },
+    reset() {
+      if (animId) cancelAnimationFrame(animId);
+      step = 0;
+      entries = [];
+      levels.forEach(l => l.filled = false);
+      elAvg.textContent = '—';
+      elExp.textContent = '0';
+      draw();
+    },
+    redraw() { draw(); }
+  };
+}
+
+const strategies = {};
+window.addEventListener('load', () => {
+  strategies.linear = buildStrategy('cvLinear', [1,1,1,1,1], document.getElementById('linearAvg'), document.getElementById('linearExp'), 100, 5, '#3b6fd4');
+  strategies.geo = buildStrategy('cvGeo', [1,2,4,8,16], document.getElementById('geoAvg'), document.getElementById('geoExp'), 100, 5, '#e0663e');
+  strategies.hybrid = buildStrategy('cvHybrid', [1,1,2,4,8], document.getElementById('hybridAvg'), document.getElementById('hybridExp'), 100, 5, '#7e57c2');
+  strategies.linear.reset();
+  strategies.geo.reset();
+  strategies.hybrid.reset();
+
+  document.getElementById('tab-geo').addEventListener('shown.bs.tab', () => strategies.geo.redraw());
+  document.getElementById('tab-hybrid').addEventListener('shown.bs.tab', () => strategies.hybrid.redraw());
+  document.getElementById('tab-linear').addEventListener('shown.bs.tab', () => strategies.linear.redraw());
+});
+</script>
+</body>
+</html>

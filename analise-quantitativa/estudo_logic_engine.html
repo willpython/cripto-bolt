@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Estudo Visual: core/logic_engine.py</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+  body {
+    background-color: #0f1218;
+    color: #e2e8f0;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  }
+  .card-dark {
+    background-color: #171d27;
+    border: 1px solid #283344;
+    border-radius: 10px;
+  }
+  .nav-tabs {
+    border-bottom: 2px solid #283344;
+  }
+  .nav-tabs .nav-link {
+    color: #94a3b8;
+    border: none;
+    padding: 12px 20px;
+    font-weight: 600;
+  }
+  .nav-tabs .nav-link.active {
+    background-color: #1e2634;
+    color: #38bdf8;
+    border-bottom: 3px solid #38bdf8;
+    border-radius: 8px 8px 0 0;
+  }
+  .step-node {
+    padding: 14px 18px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    transition: all 0.35s ease;
+    border: 1px solid transparent;
+  }
+  .step-idle {
+    background-color: #1e2634;
+    border-color: #2e3c52;
+    color: #94a3b8;
+  }
+  .step-evaluating {
+    background-color: #253347;
+    border-color: #38bdf8;
+    color: #f8fafc;
+    box-shadow: 0 0 14px rgba(56, 189, 248, 0.25);
+    transform: translateX(6px);
+  }
+  .step-approved {
+    background-color: #143529;
+    border-color: #34d399;
+    color: #ecfdf5;
+    box-shadow: 0 0 14px rgba(52, 211, 153, 0.25);
+    transform: translateX(6px);
+  }
+  .step-blocked {
+    background-color: #3b181e;
+    border-color: #f87171;
+    color: #fef2f2;
+    box-shadow: 0 0 14px rgba(248, 113, 113, 0.25);
+    transform: translateX(6px);
+  }
+  .badge-tag {
+    font-size: 0.75rem;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .badge-blue { background: #1e3a5f; color: #7dd3fc; }
+  .badge-green { background: #134e3a; color: #6ee7b7; }
+  .badge-amber { background: #4a3410; color: #fcd34d; }
+  .badge-red { background: #4c1d24; color: #fca5a5; }
+  .metric-pill {
+    background: #111620;
+    border: 1px solid #243042;
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+  .metric-val {
+    font-size: 1.15rem;
+    font-weight: 700;
+  }
+  .code-term {
+    font-family: 'Consolas', monospace;
+    font-size: 0.82rem;
+    background: #0b0e14;
+    border: 1px solid #1e2634;
+    color: #a5b4fc;
+    padding: 12px;
+    border-radius: 8px;
+    max-height: 280px;
+    overflow-y: auto;
+  }
+  .btn-sim {
+    background-color: #0284c7;
+    border: none;
+    color: #ffffff;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 6px;
+  }
+  .btn-sim:hover { background-color: #0369a1; }
+  .btn-reset {
+    background: transparent;
+    border: 1px solid #475569;
+    color: #cbd5e1;
+    padding: 8px 16px;
+    border-radius: 6px;
+  }
+  .btn-reset:hover { background: #1e293b; color: #fff; }
+</style>
+</head>
+<body class="p-4">
+
+<div class="container-fluid max-w-7xl">
+  <!-- Header -->
+  <div class="d-flex align-items-center justify-content-between mb-3 border-bottom border-secondary pb-3">
+    <div>
+      <span class="badge badge-blue mb-1">MÓDULO 1 DE 2</span>
+      <h3 class="mb-0 text-white font-weight-bold">Pipeline do <span style="color:#38bdf8;">core/logic_engine.py</span></h3>
+      <small class="text-secondary">Simulação interativa do Ciclo de Inferência Determinística (Fase 4 do DIKW)</small>
+    </div>
+    <div class="text-end">
+      <span class="badge badge-green">P0 - Segurança & Regras</span>
+    </div>
+  </div>
+
+  <!-- Cenários de Teste -->
+  <div class="card card-dark p-3 mb-3">
+    <div class="row g-2 align-items-center">
+      <div class="col-md-3">
+        <label class="form-label small text-secondary mb-1">Selecione o Contexto de Entrada:</label>
+        <select id="scenarioSelect" class="form-select form-select-sm bg-dark text-white border-secondary">
+          <option value="ideal_long">Cenário A: Setup Ideal de Alta (Tudo Alinhado)</option>
+          <option value="regime_bear">Cenário B: Tendência de Baixa (Regime Bloqueia)</option>
+          <option value="high_vol">Cenário C: Volatilidade Excessiva (Filtro ATR Atua)</option>
+          <option value="max_loss">Cenário D: Circuito Kill-Switch (Limite Atingido)</option>
+        </select>
+      </div>
+      <div class="col-md-5">
+        <label class="form-label small text-secondary mb-1">Parâmetros Injetados no Contexto:</label>
+        <div class="d-flex gap-2">
+          <div class="metric-pill py-1 px-2 flex-fill text-center">
+            <span class="text-secondary small d-block">Regime</span>
+            <span id="paramRegime" class="fw-bold text-info">ALTA</span>
+          </div>
+          <div class="metric-pill py-1 px-2 flex-fill text-center">
+            <span class="text-secondary small d-block">Fractal</span>
+            <span id="paramFractal" class="fw-bold text-success">Fundo (102.5)</span>
+          </div>
+          <div class="metric-pill py-1 px-2 flex-fill text-center">
+            <span class="text-secondary small d-block">ATR Ratio</span>
+            <span id="paramAtr" class="fw-bold text-warning">1.10x</span>
+          </div>
+          <div class="metric-pill py-1 px-2 flex-fill text-center">
+            <span class="text-secondary small d-block">Drawdown</span>
+            <span id="paramDd" class="fw-bold text-danger">-0.8%</span>
+          </div>
+        </div>
+      </div>
+      <div class="col-md-4 text-end pt-3">
+        <button id="btnRun" class="btn-sim me-2">▶ Rodar Motor</button>
+        <button id="btnReset" class="btn-reset">⟲ Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fluxo de Execução com Cores Distintas -->
+  <div class="row g-3">
+    <!-- Coluna 1: Cadeia de Regras Sequenciais -->
+    <div class="col-md-7">
+      <div class="card card-dark p-3 h-100">
+        <h6 class="text-white border-bottom border-secondary pb-2 mb-3">
+          Pipeline Sequencial de Regras (Prioridade Crescente)
+        </h6>
+
+        <!-- Regra 1 -->
+        <div id="node1" class="step-node step-idle">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <strong>R1: Safety Kill Switch (Circuito de Emergência)</strong>
+            <span class="badge badge-red">Prioridade 100</span>
+          </div>
+          <small class="d-block text-secondary">Verifica se o Drawdown Diário ultrapassa o limite seguro permitido (máx 2.5%).</small>
+          <div id="stat1" class="mt-2 small fw-bold text-muted">Aguardando execução...</div>
+        </div>
+
+        <!-- Regra 2 -->
+        <div id="node2" class="step-node step-idle">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <strong>R2: Volatility Regime Gatekeeper</strong>
+            <span class="badge badge-amber">Prioridade 80</span>
+          </div>
+          <small class="d-block text-secondary">Bloqueia operações se ATR(14) for &gt; 2.2x da média móvel histórica de volatilidade.</small>
+          <div id="stat2" class="mt-2 small fw-bold text-muted">Aguardando execução...</div>
+        </div>
+
+        <!-- Regra 3 -->
+        <div id="node3" class="step-node step-idle">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <strong>R3: Markov State Filter</strong>
+            <span class="badge badge-blue">Prioridade 60</span>
+          </div>
+          <small class="d-block text-secondary">Só libera compras se probabilidade de Regime de Alta P(Alta|Estado) &gt; 55%.</small>
+          <div id="stat3" class="mt-2 small fw-bold text-muted">Aguardando execução...</div>
+        </div>
+
+        <!-- Regra 4 -->
+        <div id="node4" class="step-node step-idle">
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <strong>R4: Fractal Trigger + Divergência OBV</strong>
+            <span class="badge badge-green">Prioridade 40</span>
+          </div>
+          <small class="d-block text-secondary">Requer Fractal de Fundo confirmado nos últimos 3 candles + Divergência Bullish no OBV.</small>
+          <div id="stat4" class="mt-2 small fw-bold text-muted">Aguardando execução...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Coluna 2: Saída do Motor e Log de Auditoria -->
+    <div class="col-md-5">
+      <div class="card card-dark p-3 h-100 d-flex flex-column">
+        <h6 class="text-white border-bottom border-secondary pb-2 mb-3">
+          Saída do Sinal & Auditoria
+        </h6>
+
+        <div class="metric-pill mb-3">
+          <div class="text-secondary small">DECISÃO CONSOLIDADA:</div>
+          <div id="finalDecision" class="metric-val text-muted">NEUTRO (AGUARDANDO)</div>
+          <div id="finalDetail" class="small text-secondary mt-1">Nenhum ciclo executado ainda.</div>
+        </div>
+
+        <div class="flex-grow-1 d-flex flex-column">
+          <label class="small text-secondary mb-1">Log em Tempo Real (Audit Trail):</label>
+          <div id="auditLog" class="code-term flex-grow-1">
+[SYSTEM READY] core/logic_engine.py carregado.
+Definições de 4 regras registradas no container.
+Selecione um cenário e clique em "Rodar Motor".
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const scenarios = {
+  ideal_long: {
+    regime: "ALTA",
+    prob_alta: 0.68,
+    fractal: "Fundo (102.5)",
+    fractal_val: true,
+    obv_div: true,
+    atr_ratio: 1.10,
+    drawdown_pct: -0.008
+  },
+  regime_bear: {
+    regime: "BAIXA",
+    prob_alta: 0.22,
+    fractal: "Fundo (98.0)",
+    fractal_val: true,
+    obv_div: true,
+    atr_ratio: 1.25,
+    drawdown_pct: -0.005
+  },
+  high_vol: {
+    regime: "ALTA",
+    prob_alta: 0.62,
+    fractal: "Fundo (101.0)",
+    fractal_val: true,
+    obv_div: true,
+    atr_ratio: 2.65,
+    drawdown_pct: -0.011
+  },
+  max_loss: {
+    regime: "ALTA",
+    prob_alta: 0.70,
+    fractal: "Fundo (99.0)",
+    fractal_val: true,
+    obv_div: true,
+    atr_ratio: 1.15,
+    drawdown_pct: -0.029
+  }
+};
+
+const select = document.getElementById('scenarioSelect');
+const paramRegime = document.getElementById('paramRegime');
+const paramFractal = document.getElementById('paramFractal');
+const paramAtr = document.getElementById('paramAtr');
+const paramDd = document.getElementById('paramDd');
+const auditLog = document.getElementById('auditLog');
+const finalDecision = document.getElementById('finalDecision');
+const finalDetail = document.getElementById('finalDetail');
+
+function updateParamsView(sc) {
+  paramRegime.textContent = sc.regime + " (" + Math.round(sc.prob_alta * 100) + "%)";
+  paramFractal.textContent = sc.fractal;
+  paramAtr.textContent = sc.atr_ratio.toFixed(2) + "x";
+  paramDd.textContent = (sc.drawdown_pct * 100).toFixed(1) + "%";
+}
+
+select.addEventListener('change', () => {
+  resetUI();
+  updateParamsView(scenarios[select.value]);
+});
+
+function log(msg) {
+  auditLog.innerHTML += "\n" + msg;
+  auditLog.scrollTop = auditLog.scrollHeight;
+}
+
+function resetUI() {
+  for (let i = 1; i <= 4; i++) {
+    const el = document.getElementById('node' + i);
+    el.className = 'step-node step-idle';
+    document.getElementById('stat' + i).textContent = 'Aguardando execução...';
+    document.getElementById('stat' + i).className = 'mt-2 small fw-bold text-muted';
+  }
+  finalDecision.textContent = 'NEUTRO (AGUARDANDO)';
+  finalDecision.className = 'metric-val text-muted';
+  finalDetail.textContent = 'Nenhum ciclo executado ainda.';
+  auditLog.innerHTML = '[SYSTEM READY] Configuração zerada pronta para nova avaliação.';
+}
+
+document.getElementById('btnReset').addEventListener('click', () => {
+  resetUI();
+  updateParamsView(scenarios[select.value]);
+});
+
+document.getElementById('btnRun').addEventListener('click', runEngine);
+
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function runEngine() {
+  resetUI();
+  const sc = scenarios[select.value];
+  log("[START] Iniciando ciclo de inferência do LogicEngine...");
+
+  // Passo 1: Regra 1 Kill Switch
+  await sleep(400);
+  const n1 = document.getElementById('node1');
+  const s1 = document.getElementById('stat1');
+  n1.className = 'step-node step-evaluating';
+  s1.textContent = 'Avaliando Drawdown Diário atual contra teto de 2.5%...';
+  log("-> [R1 Check] DD Diário: " + (sc.drawdown_pct * 100).toFixed(2) + "%");
+
+  await sleep(600);
+  if (sc.drawdown_pct <= -0.025) {
+    n1.className = 'step-node step-blocked';
+    s1.textContent = 'BLOQUEIO CRÍTICO: Drawdown ultrapassa -2.5%. Parada total (Kill Switch disparado).';
+    s1.className = 'mt-2 small fw-bold text-danger';
+    log("[HALT] R1 violada. Interrupção imediata da cadeia.");
+    finalDecision.textContent = 'BLOQUEIO POR RISCO (CIRCUIT BREAKER)';
+    finalDecision.className = 'metric-val text-danger';
+    finalDetail.textContent = 'O limite diário de perda foi violado. Nenhuma ordem autorizada.';
+    return;
+  } else {
+    n1.className = 'step-node step-approved';
+    s1.textContent = 'APROVADO: Drawdown dentro dos parâmetros normais de risco.';
+    s1.className = 'mt-2 small fw-bold text-success';
+  }
+
+  // Passo 2: Regra 2 Volatilidade
+  await sleep(400);
+  const n2 = document.getElementById('node2');
+  const s2 = document.getElementById('stat2');
+  n2.className = 'step-node step-evaluating';
+  s2.textContent = 'Verificando razão ATR atual vs histórico...';
+  log("-> [R2 Check] Razão ATR: " + sc.atr_ratio.toFixed(2) + "x (máx tolerado: 2.20x)");
+
+  await sleep(600);
+  if (sc.atr_ratio > 2.20) {
+    n2.className = 'step-node step-blocked';
+    s2.textContent = 'BLOQUEIO DE REGIME: Volatilidade anormal (> 2.2x). Mercado perigoso para entradas.';
+    s2.className = 'mt-2 small fw-bold text-danger';
+    log("[ABORT] R2 rejeitou entrada devido a spread/volatilidade extrema.");
+    finalDecision.textContent = 'SEM OPERAÇÃO (MERCADO ANÔMALO)';
+    finalDecision.className = 'metric-val text-warning';
+    finalDetail.textContent = 'Volatilidade muito elevada distorce o preço do gradiente.';
+    return;
+  } else {
+    n2.className = 'step-node step-approved';
+    s2.textContent = 'APROVADO: Volatilidade em faixa navegável.';
+    s2.className = 'mt-2 small fw-bold text-success';
+  }
+
+  // Passo 3: Regra 3 Markov
+  await sleep(400);
+  const n3 = document.getElementById('node3');
+  const s3 = document.getElementById('stat3');
+  n3.className = 'step-node step-evaluating';
+  s3.textContent = 'Avaliando matriz de transição de Markov para probabilidade direcional...';
+  log("-> [R3 Check] P(Alta|Estado Atual) = " + (sc.prob_alta * 100).toFixed(1) + "%");
+
+  await sleep(600);
+  if (sc.prob_alta < 0.55) {
+    n3.className = 'step-node step-blocked';
+    s3.textContent = 'SINAL DESFAVORÁVEL: Probabilidade de continuidade em alta é baixa (< 55%).';
+    s3.className = 'mt-2 small fw-bold text-warning';
+    log("[REJECT] R3 não confirmou regime de alta compatível com setup de compra.");
+    finalDecision.textContent = 'SEM OPERAÇÃO (REGIME CONTRÁRIO)';
+    finalDecision.className = 'metric-val text-warning';
+    finalDetail.textContent = 'A matriz de Markov indica maior chance de queda ou lateralização.';
+    return;
+  } else {
+    n3.className = 'step-node step-approved';
+    s3.textContent = 'APROVADO: Matriz de Markov favorece o lado comprador.';
+    s3.className = 'mt-2 small fw-bold text-success';
+  }
+
+  // Passo 4: Regra 4 Setup Técnico
+  await sleep(400);
+  const n4 = document.getElementById('node4');
+  const s4 = document.getElementById('stat4');
+  n4.className = 'step-node step-evaluating';
+  s4.textContent = 'Verificando presença de Fractal de Fundo + Divergência OBV...';
+  log("-> [R4 Check] Fractal: " + sc.fractal + " | Div OBV: " + sc.obv_div);
+
+  await sleep(600);
+  if (sc.fractal_val && sc.obv_div) {
+    n4.className = 'step-node step-approved';
+    s4.textContent = 'SETUP CONFIRMADO: Fractal de fundo com divergência positiva de volume.';
+    s4.className = 'mt-2 small fw-bold text-success';
+    log("[SUCCESS] Todas as regras foram validadas com sucesso.");
+    finalDecision.textContent = 'SINAL DE COMPRA AUTORIZADO (LONG)';
+    finalDecision.className = 'metric-val text-success';
+    finalDetail.textContent = 'Disparando evento para o LinearGradientManager (Nível 0, 1 lote).';
+  }
+}
+
+updateParamsView(scenarios.ideal_long);
+</script>
+</body>
+</html>

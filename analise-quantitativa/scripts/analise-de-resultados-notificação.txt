@@ -1,0 +1,195 @@
+[14/09/2026 14:20] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XRP/USDT (SHORT • Venda)
+📦 Volume Total: 21.2 XRP
+💵 PM Entrada: $1.4210
+🏁 Preço Saída: $1.4200
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.07%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.11
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:20:48 • Cripto Bolt
+[14/09/2026 14:22] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XLM/USDT (SHORT • Venda)
+📦 Volume Total: 78 XLM
+💵 PM Entrada: $0.1948
+🏁 Preço Saída: $0.1946
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.08
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:22:56 • Cripto Bolt
+[14/09/2026 14:24] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: LINK/USDT (LONG • Compra)
+📦 Volume Total: 1.31 LINK
+💵 PM Entrada: $11.54
+🏁 Preço Saída: $11.55
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.08
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:24:00 • Cripto Bolt
+[14/09/2026 14:26] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XLM/USDT (SHORT • Venda)
+📦 Volume Total: 77 XLM
+💵 PM Entrada: $0.1950
+🏁 Preço Saída: $0.1948
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.08
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO (BOOK EXEC)
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:26:09 • Cripto Bolt
+[14/09/2026 14:27] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: LINK/USDT (LONG • Compra)
+📦 Volume Total: 1.3 LINK
+💵 PM Entrada: $11.57
+🏁 Preço Saída: $11.58
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.08
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:27:14 • Cripto Bolt
+[14/09/2026 14:30] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: LINK/USDT (LONG • Compra)
+📦 Volume Total: 1.3 LINK
+💵 PM Entrada: $11.57
+🏁 Preço Saída: $11.59
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.08
+🧾 Ordem de Fechamento: 1000000205306349
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO (BOOK EXEC)
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:30:27 • Cripto Bolt
+[14/09/2026 14:30] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XRP/USDT (LONG • Compra)
+📦 Volume Total: 10.6 XRP
+💵 PM Entrada: $1.4210
+🏁 Preço Saída: $1.4220
+💰 Resultado PnL: 🟢 +$0.01 USDT (+0.07%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.05
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO (BOOK EXEC)
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:30:27 • Cripto Bolt
+[14/09/2026 14:32] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XRP/USDT (LONG • Compra)
+📦 Volume Total: 10.6 XRP
+💵 PM Entrada: $1.4250
+🏁 Preço Saída: $1.4260
+💰 Resultado PnL: 🟢 +$0.01 USDT (+0.07%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.05
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:32:36 • Cripto Bolt
+[14/09/2026 14:33] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: LINK/USDT (SHORT • Venda)
+📦 Volume Total: 1.3 LINK
+💵 PM Entrada: $11.59
+🏁 Preço Saída: $11.58
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.08
+🧾 Ordem de Fechamento: 1000000205308544
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO (BOOK EXEC)
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:33:40 • Cripto Bolt
+[14/09/2026 14:33] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: DOGE/USDT (SHORT • Venda)
+📦 Volume Total: 106 DOGE
+💵 PM Entrada: $0.0847
+🏁 Preço Saída: $0.0846
+💰 Resultado PnL: 🟢 +$0.01 USDT (+0.12%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.05
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:33:41 • Cripto Bolt
+[14/09/2026 14:36] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XRP/USDT (SHORT • Venda)
+📦 Volume Total: 10.6 XRP
+💵 PM Entrada: $1.4270
+🏁 Preço Saída: $1.4260
+💰 Resultado PnL: 🟢 +$0.01 USDT (+0.07%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.05
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:36:56 • Cripto Bolt
+[14/09/2026 14:48] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: DOGE/USDT (SHORT • Venda)
+📦 Volume Total: 177 DOGE
+💵 PM Entrada: $0.0848
+🏁 Preço Saída: $0.0847
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.12%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.09
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:48:08 • Cripto Bolt
+[14/09/2026 14:54] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XRP/USDT (LONG • Compra)
+📦 Volume Total: 10.5 XRP
+💵 PM Entrada: $1.4370
+🏁 Preço Saída: $1.4380
+💰 Resultado PnL: 🟢 +$0.01 USDT (+0.07%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.05
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:54:26 • Cripto Bolt
+[14/09/2026 14:55] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: XLM/USDT (LONG • Compra)
+📦 Volume Total: 77 XLM
+💵 PM Entrada: $0.1966
+🏁 Preço Saída: $0.1968
+💰 Resultado PnL: 🟢 +$0.02 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.08
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 14:55:32 • Cripto Bolt
+[14/09/2026 15:01] Agente Cripto: 🏁 CICLO ENCERRADO — TAKE PROFIT (LUCRO)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Par: LINK/USDT (SHORT • Venda)
+📦 Volume Total: 2.6 LINK
+💵 PM Entrada: $11.61
+🏁 Preço Saída: $11.60
+💰 Resultado PnL: 🟢 +$0.03 USDT (+0.10%)
+🇧🇷 Equivalente estimado: 🟢 +R$0.16
+🧾 Ordem de Fechamento: Não disponível
+⚙️ Gatilho: TAKE_PROFIT_ALCANCADO
+🛡 Ambiente: BINANCE FUTURES DEMO ($15.00/linha)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱ 14/09/2026 15:01:54 • Cripto Bolt

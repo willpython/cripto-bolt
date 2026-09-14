@@ -1,0 +1,403 @@
+import logging
+import os
+from typing import Any, Dict
+import uuid
+
+import ccxt.async_support as ccxt_async
+
+from database.supabase_db import log_order
+
+logger = logging.getLogger("ExchangeExecutor")
+
+
+class ExchangeExecutionEngine:
+    """Executor seguro para Paper Local e Binance Demo Trading USDâ“ˆ-M Futures."""
+
+    def __init__(self, exchange_id: str = "binance"):
+        self.exchange_id = exchange_id.lower()
+        self.paper_mode = (
+            os.getenv("BOT_TRADER_PAPER_MODE", "true").lower() == "true"
+        )
+        self.sandbox = (
+            os.getenv("BINANCE_SANDBOX", "false").lower() == "true"
+        )
+        self.demo_trading = (
+            os.getenv("BINANCE_DEMO_TRADING", "false").lower() == "true"
+        )
+
+        if self.sandbox and self.demo_trading:
+            raise ValueError(
+                "ConfiguraÃ§Ã£o invÃ¡lida: use BINANCE_SANDBOX ou "
+                "BINANCE_DEMO_TRADING, nunca ambos."
+            )
+
+        if self.demo_trading:
+            self.api_key = os.getenv("BINANCE_DEMO_API_KEY", "").strip()
+            self.secret = os.getenv("BINANCE_DEMO_API_SECRET", "").strip()
+        elif self.sandbox:
+            self.api_key = os.getenv("BINANCE_TESTNET_API_KEY", "").strip()
+            self.secret = os.getenv("BINANCE_TESTNET_API_SECRET", "").strip()
+        else:
+            self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
+            self.secret = os.getenv("BINANCE_API_SECRET", "").strip()
+
+        self.leverage = int(os.getenv("BINANCE_FUTURES_LEVERAGE", "1"))
+        self.margin_mode = os.getenv(
+            "BINANCE_FUTURES_MARGIN_MODE", "isolated"
+        ).lower()
+        self.min_notional_fallback = float(
+            os.getenv("FUTURES_MIN_NOTIONAL_FALLBACK", "5.0")
+        )
+        self.max_notional_per_level = float(
+            os.getenv("FUTURES_MAX_NOTIONAL_PER_LEVEL", "5.0")
+        )
+
+        exchange_class = getattr(ccxt_async, self.exchange_id, None)
+        if not exchange_class:
+            raise ValueError(
+                f"Exchange '{self.exchange_id}' nÃ£o suportada pelo CCXT."
+            )
+
+        self.client = exchange_class(
+            {
+                "apiKey": self.api_key,
+                "secret": self.secret,
+                "enableRateLimit": True,
+                "timeout": 20000,
+                "options": {
+                    "defaultType": "future",
+                    "adjustForTimeDifference": True,
+                },
+            }
+        )
+
+        if self.demo_trading:
+            self.client.enable_demo_trading(True)
+        elif self.sandbox:
+            self.client.set_sandbox_mode(True)
+
+        self.markets_loaded = False
+        self._configured_symbols: set[str] = set()
+
+        logger.info(
+            "Executor inicializado | paper=%s | sandbox=%s | demo=%s | "
+            "market=USDâ“ˆ-M Futures | leverage=%sx | margin=%s | "
+            "max_notional/linha=$%.2f",
+            self.paper_mode,
+            self.sandbox,
+            self.demo_trading,
+            self.leverage,
+            self.margin_mode,
+            self.max_notional_per_level,
+        )
+
+    @staticmethod
+    def to_futures_symbol(symbol: str) -> str:
+        """Converte BTC/USDT em BTC/USDT:USDT, formato unificado do CCXT para USDâ“ˆ-M."""
+        symbol = symbol.upper().strip()
+        if ":" in symbol:
+            return symbol
+        if symbol.endswith("/USDT"):
+            return f"{symbol}:USDT"
+        return symbol
+
+    @staticmethod
+    def to_storage_symbol(symbol: str) -> str:
+        """Converte BTC/USDT:USDT em BTC/USDT para logs e Supabase."""
+        return symbol.split(":", 1)[0]
+
+    async def _ensure_markets_loaded(self) -> None:
+        if not self.markets_loaded:
+            await self.client.load_markets()
+            self.markets_loaded = True
+
+    async def _ensure_contract_risk(self, futures_symbol: str) -> None:
+        """Configura margem isolada e alavancagem uma Ãºnica vez por contrato."""
+        if futures_symbol in self._configured_symbols:
+            return
+
+        try:
+            await self.client.set_margin_mode(
+                self.margin_mode,
+                futures_symbol,
+                params={"marginType": self.margin_mode.upper()},
+            )
+        except Exception as exc:
+            logger.info(
+                "Margem para %s jÃ¡ configurada ou indisponÃ­vel: %s",
+                futures_symbol,
+                exc,
+            )
+
+        try:
+            await self.client.set_leverage(
+                self.leverage,
+                futures_symbol,
+                params={"leverage": self.leverage},
+            )
+        except Exception as exc:
+            logger.info(
+                "Alavancagem para %s jÃ¡ configurada ou indisponÃ­vel: %s",
+                futures_symbol,
+                exc,
+            )
+
+        self._configured_symbols.add(futures_symbol)
+
+    async def normalize_futures_order(
+        self,
+        symbol: str,
+        requested_quantity: float,
+        price: float,
+    ) -> Dict[str, Any]:
+        """Normaliza sÃ­mbolo, quantidade e notional conforme regras da Binance Futures.
+
+        A rotina nunca deixa uma ordem superar FUTURES_MAX_NOTIONAL_PER_LEVEL.
+        Caso o contrato exija mÃ­nimo maior, falha fechada em vez de elevar o risco.
+        """
+        if price <= 0:
+            raise ValueError("PreÃ§o deve ser maior que zero para dimensionar ordem.")
+
+        await self._ensure_markets_loaded()
+        futures_symbol = self.to_futures_symbol(symbol)
+
+        if futures_symbol not in self.client.markets:
+            raise ValueError(
+                f"Contrato Futures nÃ£o encontrado no CCXT: {futures_symbol}"
+            )
+
+        market = self.client.market(futures_symbol)
+        limits = market.get("limits", {})
+        min_amount = float(limits.get("amount", {}).get("min") or 0.0)
+        min_cost = float(
+            limits.get("cost", {}).get("min") or self.min_notional_fallback
+        )
+        required_notional = max(min_cost, self.min_notional_fallback)
+
+        # Trava de risco: nÃ£o aceita elevar lote acima do mÃ¡ximo aprovado pelo usuÃ¡rio.
+        if required_notional > self.max_notional_per_level:
+            raise ValueError(
+                f"Contrato {futures_symbol} exige mÃ­nimo de ${required_notional:.2f}, "
+                f"acima de FUTURES_MAX_NOTIONAL_PER_LEVEL=${self.max_notional_per_level:.2f}. "
+                "Ordem bloqueada por seguranÃ§a."
+            )
+
+        requested_notional = requested_quantity * price
+        target_notional = max(requested_notional, required_notional)
+        raw_amount = max(requested_quantity, min_amount, target_notional / price)
+
+        normalized_price = float(
+            self.client.price_to_precision(futures_symbol, price)
+        )
+
+        # A Binance exige que quantity seja mÃºltiplo do stepSize. Como o CCXT
+        # pode truncar, aumentamos a quantidade em passos vÃ¡lidos atÃ© atingir
+        # o MIN_NOTIONAL depois do arredondamento.
+        amount_step = market.get("precision", {}).get("amount")
+
+        if not amount_step or float(amount_step) <= 0:
+            raise ValueError(
+                f"Step size/precision de quantidade invÃ¡lido para {futures_symbol}: "
+                f"{amount_step}"
+            )
+
+        amount_step = float(amount_step)
+
+        raw_amount = max(
+            requested_quantity,
+            min_amount,
+            required_notional / normalized_price,
+        )
+
+        normalized_amount = float(
+            self.client.amount_to_precision(futures_symbol, raw_amount)
+        )
+        effective_notional = normalized_amount * normalized_price
+
+        # ApÃ³s o truncamento, sobe um step por vez atÃ© passar o mÃ­nimo.
+        # A tolerÃ¢ncia evita erro de ponto flutuante em valores como 5.0000000001.
+        max_adjustments = 10_000
+        adjustments = 0
+
+        while effective_notional + 1e-10 < required_notional:
+            adjustments += 1
+
+            if adjustments > max_adjustments:
+                raise RuntimeError(
+                    f"NÃ£o foi possÃ­vel normalizar {futures_symbol} para o "
+                    f"MIN_NOTIONAL de ${required_notional:.2f}."
+                )
+
+            raw_amount = normalized_amount + amount_step
+            normalized_amount = float(
+                self.client.amount_to_precision(futures_symbol, raw_amount)
+            )
+            effective_notional = normalized_amount * normalized_price
+
+        if effective_notional > self.max_notional_per_level * 1.01:
+            raise ValueError(
+                f"Notional normalizado ${effective_notional:.4f} excede limite "
+                f"configurado de ${self.max_notional_per_level:.2f} por linha."
+            )
+
+        return {
+            "futures_symbol": futures_symbol,
+            "storage_symbol": self.to_storage_symbol(symbol),
+            "amount": normalized_amount,
+            "price": normalized_price,
+            "requested_notional": requested_notional,
+            "effective_notional": effective_notional,
+            "min_notional": required_notional,
+            "min_amount": min_amount,
+        }
+
+    async def execute_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        price: float,
+        quantity: float,
+        level: int = 0,
+        slippage_tolerance_pct: float = 0.002,
+        reduce_only: bool = False,
+    ) -> Dict[str, Any]:
+        """Executa ordens na Binance Futures suportando tanto One-Way Mode quanto Hedge Mode."""
+        side = side.upper().strip()
+        order_type = order_type.upper().strip()
+        storage_symbol = self.to_storage_symbol(symbol)
+        client_order_id = f"BOLT-{uuid.uuid4().hex[:12].upper()}"
+
+        result_payload: Dict[str, Any] = {
+            "symbol": storage_symbol,
+            "side": side,
+            "order_type": order_type,
+            "price": float(price),
+            "quantity": float(quantity),
+            "filled_quantity": 0.0,
+            "average_price": float(price),
+            "status": "PENDING",
+            "level": level,
+            "is_paper_trading": self.paper_mode,
+            "exchange_order_id": client_order_id,
+        }
+
+        if self.paper_mode:
+            result_payload["status"] = "FILLED"
+            result_payload["filled_quantity"] = float(quantity)
+            result_payload["filled"] = float(quantity)
+            result_payload["average_price"] = float(price)
+            result_payload["average"] = float(price)
+            db_id = await log_order(result_payload)
+            result_payload["db_id"] = db_id
+            return result_payload
+
+        if not self.demo_trading:
+            raise RuntimeError("EXECUÃ‡ÃƒO BLOQUEADA: apenas BINANCE_DEMO_TRADING=true Ã© permitida.")
+
+        if not self.api_key or not self.secret:
+            raise RuntimeError("Credenciais BINANCE_DEMO_API_KEY/SECRET nÃ£o configuradas.")
+
+        try:
+            await self._ensure_markets_loaded()
+            futures_symbol = self.to_futures_symbol(storage_symbol)
+
+            if reduce_only:
+                normalized_amount = float(self.client.amount_to_precision(futures_symbol, quantity))
+                normalized_price = float(self.client.price_to_precision(futures_symbol, price))
+                effective_notional = normalized_amount * normalized_price
+            else:
+                normalized = await self.normalize_futures_order(
+                    symbol=storage_symbol,
+                    requested_quantity=quantity,
+                    price=price,
+                )
+                futures_symbol = normalized["futures_symbol"]
+                normalized_amount = float(normalized["amount"])
+                normalized_price = float(normalized["price"])
+                effective_notional = float(normalized["effective_notional"])
+                await self._ensure_contract_risk(futures_symbol)
+
+            order_params: Dict[str, Any] = {"clientOrderId": client_order_id}
+
+            # =========================================================================
+            # SUPORTE HÃBRIDO HEDGE MODE / ONE-WAY MODE
+            # =========================================================================
+            # Descobre se a conta na Binance estÃ¡ em Hedge Mode (dualSidePosition = True)
+            is_hedge_mode = False
+            try:
+                position_mode = await self.client.fapiPrivateGetPositionSideDual()
+                is_hedge_mode = bool(position_mode.get("dualSidePosition", False))
+            except Exception:
+                is_hedge_mode = False
+
+            if is_hedge_mode:
+                # No Hedge Mode, a Binance PROÃBE reduceOnly=True (Erro -2022).
+                # A saÃ­da Ã© definida exclusivamente pelo positionSide [18][23]:
+                # Fechar compra (SELL): positionSide='LONG'
+                # Fechar venda (BUY): positionSide='SHORT'
+                if reduce_only:
+                    order_params["positionSide"] = "LONG" if side == "SELL" else "SHORT"
+                else:
+                    order_params["positionSide"] = "LONG" if side == "BUY" else "SHORT"
+            else:
+                # No One-Way Mode, utiliza reduceOnly normalmente
+                if reduce_only:
+                    order_params["reduceOnly"] = True
+
+            logger.warning(
+                f"[FUTURES-DEMO] {side} {futures_symbol} | type={order_type} | "
+                f"qtd={normalized_amount:.8f} | notionalâ‰ˆ${effective_notional:.4f} | "
+                f"params={order_params} | nÃ­vel={level}"
+            )
+
+            exchange_res = await self.client.create_order(
+                symbol=futures_symbol,
+                type=order_type.lower(),
+                side=side.lower(),
+                amount=normalized_amount,
+                price=normalized_price if order_type == "LIMIT" else None,
+                params=order_params,
+            )
+
+            res_status = str(exchange_res.get("status", "OPEN")).upper()
+            res_filled = float(exchange_res.get("filled") or exchange_res.get("info", {}).get("executedQty") or 0.0)
+            res_avg = float(exchange_res.get("average") or exchange_res.get("info", {}).get("avgPrice") or normalized_price)
+
+            result_payload["id"] = str(exchange_res.get("id", ""))
+            result_payload["price"] = normalized_price
+            result_payload["quantity"] = normalized_amount
+            result_payload["status"] = res_status
+            result_payload["filled"] = res_filled
+            result_payload["filled_quantity"] = res_filled
+            result_payload["average"] = res_avg
+            result_payload["average_price"] = res_avg
+            result_payload["exchange_order_id"] = str(exchange_res.get("id", client_order_id))
+            result_payload["futures_symbol"] = futures_symbol
+            result_payload["effective_notional"] = effective_notional
+
+            db_id = await log_order(result_payload)
+            result_payload["db_id"] = db_id
+            return result_payload
+
+        except Exception as exc:
+            logger.error(f"Falha na ordem Futures Demo ({storage_symbol}): {exc}")
+            result_payload["status"] = "REJECTED"
+            try:
+                await log_order(result_payload)
+            except Exception:
+                pass
+            raise
+
+    async def close(self) -> None:
+        """Fecha a sessÃ£o HTTP assÃ­ncrona do CCXT de forma segura."""
+        client = getattr(self, "client", None)
+
+        if client is None:
+            return
+
+        try:
+            await client.close()
+            logger.info("SessÃ£o CCXT encerrada com sucesso.")
+        except Exception as exc:
+            logger.warning("Falha ao encerrar a sessÃ£o CCXT: %s", exc)
