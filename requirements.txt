@@ -32,6 +32,7 @@ pandas
 apscheduler
 plotly
 kaleido
+pyTelegramBotAPI
 requests
 sqlalchemy
 mcp[cli]
