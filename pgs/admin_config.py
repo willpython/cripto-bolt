@@ -146,10 +146,10 @@ def showAdminConfig():
                         senha_armazenada = senha_armazenada.decode()
                     if not bcrypt.checkpw(senha_atual.encode(), senha_armazenada.encode()):
                         st.error('Senha atual incorreta.')
-            else:
-                nova_hash = bcrypt.hashpw(
-                    nova_senha.encode(), bcrypt.gensalt()
-                ).decode()
-                run_async(update_senha(user['email'], nova_hash))
-                st.session_state.user['senha_hash'] = nova_hash
-                st.success('Senha alterada com sucesso!')
+                    else:
+                        nova_hash = bcrypt.hashpw(
+                            nova_senha.encode(), bcrypt.gensalt()
+                        ).decode()
+                        run_async(update_senha(user['email'], nova_hash))
+                        st.session_state.user['senha_hash'] = nova_hash
+                        st.success('Senha alterada com sucesso!')

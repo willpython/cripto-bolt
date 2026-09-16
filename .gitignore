@@ -36,6 +36,8 @@ Thumbs.db
 
 # Config
 .env
+bybit.env
+*.env
 
 # Local database
 *.db

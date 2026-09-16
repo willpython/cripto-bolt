@@ -618,7 +618,7 @@ class TelegramNotifier:
             "<b>💓 CRIPTO BOLT — RESUMO OPERACIONAL (30 MIN)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏱ <b>Janela:</b> <code>{datetime.now().strftime('%d/%m/%Y | %H:%M')}</code>\n"
-            f"🛡 <b>Modo:</b> <code>{TelegramNotifier.get_execution_mode()}</code>\n"
+            f"🛡 <b>Modo:</b> <code>{TelegramNotifier._get_execution_mode()}</code>\n"
             "🟢 <b>Status da Engine:</b> <code>100% OPERACIONAL</code>\n"
             f"🛡 <b>Circuit Breaker:</b> <code>{circuit_breaker_status}</code>\n"
             f"🧠 <b>IA Quant Ensemble:</b> <code>{'Ativa (Random Forest)' if ai_enabled else 'Desativada'}</code>\n"

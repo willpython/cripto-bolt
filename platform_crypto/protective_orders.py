@@ -20,11 +20,15 @@ class ProtectiveOrdersManager:
         self.orders_by_symbol: Dict[str, ProtectiveOrderIds] = {}
 
     def market_symbol(self, symbol: str) -> str:
-        if ":" in symbol:
-            return symbol
-        if symbol.endswith("/USDT"):
-            return f"{symbol}:USDT"
-        return f"{symbol}:USDT"
+        """Converte GRTUSDT, GRT/USDT ou GRT/USDT:USDT para o padrão oficial CCXT."""
+        raw = symbol.strip().upper()
+        if ":" in raw:
+            return raw
+        clean = raw.replace("/", "")
+        if clean.endswith("USDT"):
+            base = clean[:-4]
+            return f"{base}/USDT:USDT"
+        return f"{clean}/USDT:USDT"
 
     @staticmethod
     def exit_side(direction: str) -> str:

@@ -33,6 +33,9 @@ from platform_crypto.protective_orders import ProtectiveOrdersManager
 from strategy.linear_gradient import LinearGradientManager
 from strategy.logic_engine import SignalDecisionEngine
 
+
+from exchanges.bybit.bybit_executor import BybitExecutionEngine
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -300,7 +303,14 @@ class CriptoBoltAgent:
             return False
 
         # 4. Captura de preço real, id e pnl
-        order_id = str(close_order.get("id") or close_order.get("exchange_order_id") or "")
+        # Captura completa suportando CCXT e resposta pura da Binance:
+        order_id = str(
+            close_order.get("id")
+            or close_order.get("exchange_order_id")
+            or close_order.get("exchangeOrderId")
+            or (close_order.get("info", {}) if isinstance(close_order.get("info"), dict) else {}).get("orderId")
+            or ""
+        ).strip() or None
         exit_price = float(
             close_order.get("average")
             or close_order.get("average_price")

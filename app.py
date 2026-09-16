@@ -528,48 +528,91 @@ def interface():
     if st.session_state.get('logged_in'):
         return
 
-    st.sidebar.title('Cripto Bolt')
-    opcao = st.sidebar.radio('Selecione:', ['Login', 'Cadastrar'])
+    from utils import img_to_base64
+
+    st.sidebar.markdown(
+        f"""
+        <style>
+        .cb-sidebar-logo-wrap {{
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 0.6rem 0 1rem 0;
+            margin-bottom: 0.6rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        }}
+        .cb-sidebar-logo-wrap img {{
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            box-shadow: 0 0 0 4px rgba(255,255,255,0.14), 0 12px 26px rgba(23, 190, 187, 0.28);
+            margin-bottom: 0.5rem;
+        }}
+        .cb-sidebar-title {{
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 800;
+            font-size: 1.25rem;
+            letter-spacing: -0.02em;
+        }}
+        .cb-sidebar-tagline {{
+            font-size: 0.78rem;
+            color: #9fc4e6 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+        }}
+        </style>
+        <div class="cb-sidebar-logo-wrap">
+            <img src="data:image/png;base64,{img_to_base64('src/img/cripto-bolt.png')}" alt="Cripto Bolt" />
+            <div class="cb-sidebar-title">CRIPTO BOLT</div>
+            <div class="cb-sidebar-tagline">Acesso a Investidores</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    login_card = st.sidebar.container(border=True)
+    opcao = login_card.radio('Selecione:', ['Login', 'Cadastrar'])
 
     if opcao == 'Cadastrar':
         if not check_cadastro_aberto():
-            st.sidebar.warning('⛔ Novos cadastros estão temporariamente desabilitados.')
+            login_card.warning('⛔ Novos cadastros estão temporariamente desabilitados.')
         else:
-            nome = st.sidebar.text_input('Nome')
-            zap = st.sidebar.text_input('WhatsApp')
-            email = st.sidebar.text_input('Email')
-            senha = st.sidebar.text_input('Senha', type='password')
-            imagem = st.sidebar.file_uploader(
+            nome = login_card.text_input('Nome')
+            zap = login_card.text_input('WhatsApp')
+            email = login_card.text_input('Email')
+            senha = login_card.text_input('Senha', type='password')
+            imagem = login_card.file_uploader(
                 'Imagem de Perfil', type=['png', 'jpg', 'jpeg'])
 
             if imagem:
-                st.sidebar.image(imagem, caption='Pré-visualização', width=150)
+                login_card.image(imagem, caption='Pré-visualização', width=150)
 
-            if st.sidebar.button('Cadastrar'):
+            if login_card.button('Cadastrar', use_container_width=True):
                 erro = False
                 if not nome:
-                    st.sidebar.error('Preencha o campo Nome.')
+                    login_card.error('Preencha o campo Nome.')
                     erro = True
                 if not zap:
-                    st.sidebar.error('Preencha o campo WhatsApp.')
+                    login_card.error('Preencha o campo WhatsApp.')
                     erro = True
                 if not email:
-                    st.sidebar.error('Preencha o campo Email.')
+                    login_card.error('Preencha o campo Email.')
                     erro = True
                 if not senha:
-                    st.sidebar.error('Preencha o campo Senha.')
+                    login_card.error('Preencha o campo Senha.')
                     erro = True
                 if not imagem:
-                    st.sidebar.error('Selecione uma Imagem de Perfil.')
+                    login_card.error('Selecione uma Imagem de Perfil.')
                     erro = True
                 if not erro:
                     cadastrar_usuario(nome, zap, email, senha, imagem)
 
     elif opcao == 'Login':
-        email = st.sidebar.text_input('Email')
-        senha = st.sidebar.text_input('Senha', type='password')
+        email = login_card.text_input('Email')
+        senha = login_card.text_input('Senha', type='password')
 
-        if st.sidebar.button('Entrar'):
+        if login_card.button('🔐 Entrar', use_container_width=True, type='primary'):
             user = autenticar_usuario(email, senha)
             if user:
                 st.session_state.user = user
@@ -715,7 +758,7 @@ def main():
 
                 pagina = st.radio(
                     'Navegação',
-                    ['🤖 Cripto Bolt', '💧 DeFi & Pools', '📊 Dashboard', '👥 Clientes', '💳 Stripe', '⚡ Cripto Bolt', '⚙️ Configurações'],
+                    ['🤖 Cripto Bolt', '💧 DeFi & Pools', '📊 Dashboard', '👥 Clientes', '💳 Stripe', '⚡ Cripto Bolt', '🪙 Binance Config', '⚙️ Configurações'],
                     key='nav_admin',
                 )
                 st.divider()
@@ -745,6 +788,9 @@ def main():
                 showAdminBotTrader()
             elif pagina == 'CRIPTO BOLT v2':
                 showAdminBotTrader()
+            elif pagina == '🪙 Binance Config':
+                from pgs.binance_config import showBinanceConfig
+                showBinanceConfig()
             elif pagina == '⚙️ Configurações':
                 from pgs.admin_config import showAdminConfig
                 showAdminConfig()
