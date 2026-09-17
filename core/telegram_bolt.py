@@ -656,3 +656,346 @@ class TelegramNotifier:
         except Exception as exc:
             LOGGER.error(f"Erro ao enviar heartbeat no Telegram: {exc}")
             return False
+
+
+    @staticmethod
+    async def notificar_mineracao_bch(telemetria: Dict[str, Any]) -> bool:
+        """
+        Envia um card de telemetria do Agente Cripto Bolt para operações
+        rental-first BCH via NiceHash.
+
+        Esta função é somente de notificação. Ela não chama endpoints da
+        NiceHash, não cria pools e não abre, altera ou cancela rentals.
+
+        Campos aceitos em `telemetria`:
+        - decision: OPEN | HOLD | CLOSE
+        - reference_price_btc_per_eh_day: preço de referência SHA256
+        - liquid_offers_count: ofertas com liquidez real
+        - available_btc, pending_btc, total_btc
+        - min_amount_btc, min_limit_eh, max_limit_eh
+        - pool_configured: bool
+        - ehday_purchased: hashwork líquido estimado
+        - reasons: list[str]
+        - event: MARKET_SCAN | RANGE_ADJUSTMENT | MAX_PROFIT | AI_STOP_LOSS
+        """
+        if not bot or not CHAT_ID:
+            LOGGER.warning(
+                "Notificação de mineração ignorada: "
+                "TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID ausente."
+            )
+            return False
+
+        if not isinstance(telemetria, dict):
+            LOGGER.warning(
+                "Notificação de mineração ignorada: telemetria inválida."
+            )
+            return False
+
+        def as_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        decision = str(telemetria.get("decision", "HOLD")).upper().strip()
+        event = str(
+            telemetria.get("event", "MARKET_SCAN")
+        ).upper().strip()
+
+        reference_price = as_float(
+            telemetria.get("reference_price_btc_per_eh_day")
+        )
+        liquid_offers = int(
+            as_float(telemetria.get("liquid_offers_count"))
+        )
+
+        available_btc = as_float(telemetria.get("available_btc"))
+        pending_btc = as_float(telemetria.get("pending_btc"))
+        total_btc = as_float(telemetria.get("total_btc"))
+
+        min_amount_btc = as_float(
+            telemetria.get("min_amount_btc")
+        )
+        min_limit_eh = as_float(
+            telemetria.get("min_limit_eh")
+        )
+        max_limit_eh = as_float(
+            telemetria.get("max_limit_eh")
+        )
+        ehday_purchased = as_float(
+            telemetria.get("ehday_purchased")
+        )
+
+        pool_configured = bool(
+            telemetria.get("pool_configured", False)
+        )
+
+        raw_reasons = telemetria.get("reasons", [])
+        if isinstance(raw_reasons, list):
+            reasons = [
+                str(item).strip()
+                for item in raw_reasons
+                if str(item).strip()
+            ]
+        elif raw_reasons:
+            reasons = [str(raw_reasons).strip()]
+        else:
+            reasons = []
+
+        if decision == "OPEN":
+            decision_icon = "🟢"
+            decision_label = "PRÉ-ORDEM APROVADA"
+        elif decision == "CLOSE":
+            decision_icon = "🔴"
+            decision_label = "ENCERRAR RENTAL"
+        else:
+            decision_icon = "🟡"
+            decision_label = "AGUARDAR — HOLD"
+
+        if event == "MAX_PROFIT":
+            event_label = "MAXPROFIT — STOP-WIN"
+        elif event == "AI_STOP_LOSS":
+            event_label = "AI STOPLOSS — PROTEÇÃO ATIVA"
+        elif event == "RANGE_ADJUSTMENT":
+            event_label = "AJUSTE DE RANGE SHA256"
+        else:
+            event_label = "SCAN DE MERCADO SHA256"
+
+        pool_label = "✅ Configurada" if pool_configured else "❌ Não configurada"
+
+        if reasons:
+            reasons_html = "\n".join(
+                f"• {html.escape(reason)}"
+                for reason in reasons[:5]
+            )
+        else:
+            reasons_html = "• Nenhum bloqueio operacional reportado."
+
+        message = (
+            f"<b>⛏️ CRIPTO BOLT — MINERAÇÃO BCH</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>Evento</b>\n"
+            f"<code>{html.escape(event_label)}</code>\n\n"
+            f"<b>Decisão</b>\n"
+            f"{decision_icon} <b>{html.escape(decision_label)}</b>\n\n"
+            f"<b>Mercado SHA256</b>\n"
+            f"Preço de referência: <code>{reference_price:.8f} BTC/EH/dia</code>\n"
+            f"Ofertas líquidas: <code>{liquid_offers}</code>\n"
+            f"Hashwork estimado: <code>{ehday_purchased:.8f} EH-dia</code>\n\n"
+            f"<b>Saldo NiceHash</b>\n"
+            f"Disponível: <code>{available_btc:.8f} BTC</code>\n"
+            f"Pendente: <code>{pending_btc:.8f} BTC</code>\n"
+            f"Total: <code>{total_btc:.8f} BTC</code>\n\n"
+            f"<b>Regras SHA256</b>\n"
+            f"Valor mínimo: <code>{min_amount_btc:.8f} BTC</code>\n"
+            f"Range de limite: <code>{min_limit_eh:.8f} — {max_limit_eh:.8f} EH</code>\n"
+            f"Pool BCH: <code>{pool_label}</code>\n\n"
+            f"<b>Validações / Bloqueios</b>\n"
+            f"{reasons_html}\n\n"
+            f"<b>Modo</b>\n"
+            f"<code>DRY-RUN / SEM ORDEM ENVIADA</code>\n\n"
+            f"<i>{datetime.now().strftime('%d/%m/%Y | %H:%M:%S')} — Cripto Bolt</i>"
+        )
+
+        try:
+            await bot.send_message(
+                chat_id=int(CHAT_ID),
+                text=message,
+                parse_mode="HTML",
+            )
+            LOGGER.info(
+                "Notificação de mineração BCH enviada: evento=%s decisão=%s.",
+                event,
+                decision,
+            )
+            return True
+        except Exception as exc:
+            LOGGER.error(
+                "Erro ao enviar notificação de mineração BCH: %s",
+                exc,
+                exc_info=True,
+            )
+            return False
+
+    @staticmethod
+    async def notificar_preview_pool(preview: Dict[str, Any]) -> bool:
+        """
+        Envia ao Telegram o preview de uma pool candidata a ser criada
+        no NiceHash. Nao cria, edita ou remove pool: apenas notifica.
+        """
+        if not bot or not CHAT_ID:
+            LOGGER.warning(
+                "Notificação de preview de pool ignorada: "
+                "TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID ausente."
+            )
+            return False
+
+        if not isinstance(preview, dict):
+            return False
+
+        is_valid = bool(preview.get("is_valid", False))
+        duplicate = bool(preview.get("duplicate_found", False))
+        status_icon = "🟢" if (is_valid and not duplicate) else "🔴"
+
+        errors = preview.get("errors", [])
+        warnings = preview.get("warnings", [])
+
+        errors_html = (
+            "\n".join(f"• {html.escape(str(e))}" for e in errors)
+            if errors else "• Nenhum erro."
+        )
+        warnings_html = (
+            "\n".join(f"• {html.escape(str(w))}" for w in warnings)
+            if warnings else "• Nenhum aviso."
+        )
+
+        message = (
+            f"<b>🏗️ CRIPTO BOLT — PREVIEW DE POOL BCH</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{status_icon} <b>Status</b>\n"
+            f"<code>{'VÁLIDO' if is_valid else 'INVÁLIDO'}</code>\n\n"
+            f"<b>Nome</b>\n<code>{html.escape(str(preview.get('pool_name','')))}</code>\n\n"
+            f"<b>Algoritmo</b>\n<code>{html.escape(str(preview.get('algorithm','')))}</code>\n\n"
+            f"<b>Host</b>\n<code>{html.escape(str(preview.get('host','')))}</code>\n\n"
+            f"<b>Porta</b>\n<code>{preview.get('port','')}</code>\n\n"
+            f"<b>Username (mascarado)</b>\n<code>{html.escape(str(preview.get('username_masked','')))}</code>\n\n"
+            f"<b>Pools existentes</b>\n<code>{preview.get('existing_pools_count',0)}</code>\n\n"
+            f"<b>Duplicidade</b>\n<code>{'SIM' if duplicate else 'NÃO'}</code>\n\n"
+            f"<b>Erros</b>\n{errors_html}\n\n"
+            f"<b>Avisos</b>\n{warnings_html}\n\n"
+            f"<b>Modo</b>\n<code>PREVIEW / SEM CRIAÇÃO REAL</code>\n\n"
+            f"<i>{datetime.now().strftime('%d/%m/%Y | %H:%M:%S')} — Cripto Bolt</i>"
+        )
+
+        try:
+            await bot.send_message(
+                chat_id=int(CHAT_ID),
+                text=message,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as exc:
+            LOGGER.error(f"Erro ao enviar preview de pool: {exc}")
+            return False
+
+
+    @staticmethod
+    async def notificar_monitor_mineracao(snapshot: Dict[str, Any]) -> bool:
+        """
+        Envia telemetria do monitor de observação SHA256/BCH.
+        Não cria, altera ou cancela pools/ordens: apenas informa.
+        """
+        if not bot or not CHAT_ID:
+            LOGGER.warning(
+                "Notificação do monitor ignorada: "
+                "TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID ausente."
+            )
+            return False
+
+        if not isinstance(snapshot, dict):
+            return False
+
+        def as_float(value: Any, default: float = 0.0) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        action = str(snapshot.get("action", "HOLD")).upper()
+        events = snapshot.get("events", [])
+        heartbeat = bool(snapshot.get("heartbeat", False))
+
+        available = as_float(snapshot.get("available_btc"))
+        pending = as_float(snapshot.get("pending_btc"))
+        total = as_float(snapshot.get("total_btc"))
+        minimum_operational = as_float(snapshot.get("minimum_operational_btc"))
+
+        pool_configured = bool(snapshot.get("pool_configured", False))
+        pool_id = snapshot.get("pool_id") or "N/A"
+
+        raw_offers = int(as_float(snapshot.get("raw_offers_count")))
+        liquid_offers = int(as_float(snapshot.get("liquid_offers_count")))
+        reference_price = snapshot.get("reference_price_btc_per_eh_day")
+
+        reasons = snapshot.get("reasons", [])
+        reasons_html = (
+            "\n".join(f"• {html.escape(str(r))}" for r in reasons[:5])
+            if reasons else "• Nenhum bloqueio reportado."
+        )
+
+        events_text = ", ".join(events) if events else "HEARTBEAT"
+        action_icon = "🟢" if action == "PREVIEW_READY" else "🟡"
+        title = "💓 HEARTBEAT" if heartbeat and not events else "🔔 MUDANÇA DETECTADA"
+
+        price_line = (
+            f"<code>{reference_price:.8f} BTC/EH/dia</code>"
+            if reference_price is not None
+            else "<code>N/A</code>"
+        )
+
+        message = (
+            f"<b>⛏️ CRIPTO BOLT — MONITOR SHA256/BCH</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>{title}</b>\n"
+            f"<code>{html.escape(events_text)}</code>\n\n"
+            f"<b>Ação</b>\n{action_icon} <code>{html.escape(action)}</code>\n\n"
+            f"<b>Saldo BTC</b>\n"
+            f"Disponível: <code>{available:.8f}</code>\n"
+            f"Pendente: <code>{pending:.8f}</code>\n"
+            f"Total: <code>{total:.8f}</code>\n"
+            f"Mínimo operacional: <code>{minimum_operational:.8f}</code>\n\n"
+            f"<b>Pool BlockSniper</b>\n"
+            f"{'✅' if pool_configured else '❌'} <code>{html.escape(str(pool_id))}</code>\n\n"
+            f"<b>Mercado SHA256</b>\n"
+            f"Ofertas líquidas: <code>{liquid_offers}/{raw_offers}</code>\n"
+            f"Preço referência: {price_line}\n\n"
+            f"<b>Motivos</b>\n{reasons_html}\n\n"
+            f"<i>{datetime.now().strftime('%d/%m/%Y | %H:%M:%S')} — Cripto Bolt</i>"
+        )
+
+        try:
+            await bot.send_message(
+                chat_id=int(CHAT_ID),
+                text=message,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as exc:
+            LOGGER.error(f"Erro ao enviar alerta do monitor: {exc}")
+            return False
+
+    @staticmethod
+    async def fechar_sessao() -> None:
+        """
+        Fecha a sessão HTTP interna do AsyncTeleBot.
+
+        Deve ser chamada somente no encerramento de scripts CLI curtos,
+        como testes ou monitor executado com --once. Não chame após cada
+        mensagem em um processo Streamlit ou monitor contínuo, porque o
+        bot deve reutilizar a conexão durante sua vida útil.
+        """
+        if not bot:
+            return
+
+        try:
+            session = getattr(bot, "session", None)
+
+            if session is None:
+                return
+
+            close_method = getattr(session, "close", None)
+
+            if close_method:
+                result = close_method()
+
+                if hasattr(result, "__await__"):
+                    await result
+
+            LOGGER.info("Sessão HTTP do Telegram fechada com sucesso.")
+
+        except Exception as exc:
+            LOGGER.debug(
+                "Não foi possível fechar a sessão HTTP do Telegram: %s",
+                exc,
+                exc_info=True,
+            )

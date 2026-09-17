@@ -1,6 +1,5 @@
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-import json
 import logging
 from typing import Any, Dict, List, Optional
 import pandas as pd
@@ -26,9 +25,7 @@ class TradeSignal:
     target_price: Optional[float] = None
     reason: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc)
-    )
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -37,18 +34,26 @@ class TradeSignal:
 class SignalDecisionEngine:
     """
     Motor Quântico de Decisão para Day Trade em Cripto (Cripto Bolt).
-    Lógica estritamente corrigida sem erros de indentação ou blocos órfãos.
+
+    PONTO 4 e PONTO 5 da implementação:
+    - markov_threshold, max_daily_drawdown e max_atr_multiplier agora são
+      injetados pelo chamador (agent_main.py) a partir do .env, em vez de
+      ficarem fixos aqui como default "por coincidência".
+    - deadband_atr_multiplier substitui o valor fixo "min_atr * 0.25" por
+      um parâmetro configurável via LOGIC_DEADBAND_ATR_MULTIPLIER.
     """
 
     def __init__(
         self,
         markov_threshold: float = 0.0008,
-        max_daily_drawdown: float = 0.045,  # 4.5% tolerância diária para cripto
-        max_atr_multiplier: float = 2.50,   # Bloqueio em caso de anomalia de volatilidade
+        max_daily_drawdown: float = 0.045,
+        max_atr_multiplier: float = 2.50,
+        deadband_atr_multiplier: float = 0.20,
     ):
         self.markov = MarkovRegimeClassifier(threshold_pct=markov_threshold)
         self.max_daily_drawdown = max_daily_drawdown
         self.max_atr_multiplier = max_atr_multiplier
+        self.deadband_atr_multiplier = deadband_atr_multiplier
 
     def analyze(
         self,
@@ -138,7 +143,7 @@ class SignalDecisionEngine:
         regime, next_probs, markov_conf = self.markov.predict(current_return)
 
         # ---------------------------------------------------------
-        # P4: LÓGICA DE DECISÃO (IF / ELIF / ELSE RIGOROSAMENTE ALINHADOS)
+        # P4: LÓGICA DE DECISÃO
         # ---------------------------------------------------------
         direction = "NEUTRAL"
         confidence = 0.50
@@ -146,7 +151,9 @@ class SignalDecisionEngine:
         target_price = None
         reasons: List[str] = []
 
-        deadband = min_atr * 0.25
+        # PONTO 5: deadband agora vem do parâmetro configurável, não de um
+        # multiplicador fixo (0.25) embutido na lógica.
+        deadband = min_atr * self.deadband_atr_multiplier
 
         mtf_bullish_aligned = higher_tf_regime in [None, "ALTA", "LATERAL"]
         mtf_bearish_aligned = higher_tf_regime in [None, "BAIXA", "LATERAL"]
@@ -172,7 +179,7 @@ class SignalDecisionEngine:
                 + (0.08 if higher_tf_regime == "ALTA" else 0.0),
             )
             trigger_type = "Rompimento de Resistência" if breakout_resistance else "Repique no Suporte"
-            reasons.append(f"{trigger_type} Fractal + Markov {regime} + OBV Alinhado")
+            reasons.append(f"{trigger_type} + Fractal + Markov {regime} + OBV Alinhado")
             stop_price = round(last_support - (min_atr * 1.5), 4)
             target_price = round(current_close + (min_atr * 2.5), 4)
 
@@ -187,7 +194,7 @@ class SignalDecisionEngine:
                 + (0.08 if higher_tf_regime == "BAIXA" else 0.0),
             )
             trigger_type = "Perda de Suporte" if breakdown_support else "Rejeição na Resistência"
-            reasons.append(f"{trigger_type} Fractal + Markov {regime} + OBV Alinhado")
+            reasons.append(f"{trigger_type} + Fractal + Markov {regime} + OBV Alinhado")
             stop_price = round(last_resistance + (min_atr * 1.5), 4)
             target_price = round(current_close - (min_atr * 2.5), 4)
 
@@ -201,6 +208,7 @@ class SignalDecisionEngine:
             "obv_divergence": last_obv_div,
             "markov_next_probabilities": next_probs,
             "higher_tf_regime": higher_tf_regime,
+            "deadband_atr_multiplier": self.deadband_atr_multiplier,
             "reasons": reasons,
         }
 

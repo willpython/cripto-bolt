@@ -115,6 +115,32 @@ class ExchangeExecutionEngine:
             self.max_notional_per_level,
         )
 
+    async def set_symbol_leverage(
+        self,
+        futures_symbol: str,
+        leverage: int,
+    ) -> None:
+        leverage = int(leverage)
+
+        if leverage < 2 or leverage > 10:
+            raise ValueError(f"Alavancagem fora da faixa permitida: {leverage}x.")
+
+        await self.ensure_markets_loaded()
+
+        market = self.client.market(futures_symbol)
+        market_id = market["id"]
+
+        await self.client.fapiPrivatePostLeverage({
+            "symbol": market_id,
+            "leverage": leverage,
+        })
+
+        logger.info(
+            "[%s] Alavancagem configurada para %sx.",
+            futures_symbol,
+            leverage,
+        )
+
     @staticmethod
     def to_futures_symbol(symbol: str) -> str:
         """Converte BTC/USDT em BTC/USDT:USDT, formato unificado do CCXT para USD-M."""
@@ -273,6 +299,7 @@ class ExchangeExecutionEngine:
         slippage_tolerance_pct: float = 0.002,
         reduce_only: bool = False,
         position_direction: Optional[str] = None,
+        leverage: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Executa ordens USDⓈ-M Futures em Paper, Demo ou Live.
@@ -390,6 +417,15 @@ class ExchangeExecutionEngine:
 
             await self.ensure_contract_risk(futures_symbol)
 
+            requested_leverage = int(
+                os.getenv("BINANCE_FUTURES_LEVERAGE", "3")
+            )
+
+            await self.set_symbol_leverage(
+                futures_symbol=futures_symbol,
+                leverage=requested_leverage,
+            )
+
             order_params: Dict[str, Any] = {
                 "clientOrderId": client_order_id,
             }
@@ -424,15 +460,27 @@ class ExchangeExecutionEngine:
                 # Binance aceita reduceOnly somente em One-Way Mode.
                 order_params["reduceOnly"] = True
 
+            effective_leverage = (
+                self.leverage
+                if reduce_only
+                else int(
+                    leverage
+                    if leverage is not None
+                    else os.getenv("BINANCE_FUTURES_LEVERAGE", "3")
+                )
+            )
+
             logger.warning(
                 "[FUTURES-%s] ORDEM AUTORIZADA | %s %s | tipo=%s | "
-                "qtd=%.8f | notional≈%.4f USDT | params=%s | nível=%s",
+                "qtd=%.8f | notional≈%.4f USDT | alavancagem=%sx | "
+                "params=%s | nível=%s",
                 execution_environment,
                 side,
                 futures_symbol,
                 order_type,
                 normalized_amount,
                 effective_notional,
+                effective_leverage,
                 order_params,
                 level,
             )
@@ -461,6 +509,50 @@ class ExchangeExecutionEngine:
                 or exchange_res.get("info", {}).get("avgPrice")
                 or normalized_price
             )
+
+            # Para entrada a mercado, mede o slippage real após o fill.
+            # BUY: execução acima do preço de referência é desfavorável.
+            # SELL: execução abaixo do preço de referência é desfavorável.
+            if (
+                order_type == "MARKET"
+                and not reduce_only
+                and normalized_price > 0.0
+                and res_avg > 0.0
+            ):
+                if side == "BUY":
+                    slippage_pct = (res_avg - normalized_price) / normalized_price
+                else:
+                    slippage_pct = (normalized_price - res_avg) / normalized_price
+
+                slippage_pct = max(0.0, slippage_pct)
+
+                result_payload["slippage_pct"] = slippage_pct
+                result_payload["slippage_tolerance_pct"] = slippage_tolerance_pct
+
+                if slippage_pct > slippage_tolerance_pct:
+                    logger.warning(
+                        "[FUTURES-%s] Slippage acima da tolerância | símbolo=%s | "
+                        "lado=%s | referência=%.8f | execução=%.8f | "
+                        "slippage=%.4f%% | limite=%.4f%%.",
+                        execution_environment,
+                        futures_symbol,
+                        side,
+                        normalized_price,
+                        res_avg,
+                        slippage_pct * 100,
+                        slippage_tolerance_pct * 100,
+                    )
+                else:
+                    logger.info(
+                        "[FUTURES-%s] Slippage dentro do limite | símbolo=%s | "
+                        "slippage=%.4f%% | limite=%.4f%%.",
+                        execution_environment,
+                        futures_symbol,
+                        slippage_pct * 100,
+                        slippage_tolerance_pct * 100,
+                    )
+
+            result_payload["id"] = str(exchange_res.get("id") or "")
 
             result_payload["id"] = str(exchange_res.get("id") or "")
             result_payload["price"] = normalized_price

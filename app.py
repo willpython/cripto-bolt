@@ -15,6 +15,8 @@ from notification import Notificador, iniciar_agendamento_resumo_diario
 
 LOGGER = logging.getLogger(__name__)
 from pgs.admin_bot_trader import showAdminBotTrader
+from pgs.mineracao_bch import showMineracaoBCH
+
 
 @st.cache_resource(show_spinner=False)
 def _iniciar_scheduler_email():
@@ -757,9 +759,20 @@ def main():
                 st.divider()
 
                 pagina = st.radio(
-                    'Navegação',
-                    ['🤖 Cripto Bolt', '💧 DeFi & Pools', '📊 Dashboard', '👥 Clientes', '💳 Stripe', '⚡ Cripto Bolt', '🪙 Binance Config', '⚙️ Configurações'],
-                    key='nav_admin',
+                    "Navegação",
+                    [
+                        "Cripto Bolt",
+                        "DeFi Pools",
+                        "Dashboard",
+                        "Clientes",
+                        "Stripe",
+                        "Cripto Bolt v2",
+                        "⛏️ Cripto Bolt Mineração",
+                        "Binance Config",
+                        "Configurações",
+                        'Mineração BCH'
+                    ],
+                    key="nav_admin",
                 )
                 st.divider()
                 if st.button('🚪 Sair', use_container_width=True):
@@ -768,32 +781,39 @@ def main():
                         del st.session_state[key]
                     st.rerun()
 
-            if pagina == '🤖 Cripto Bolt':
+            if pagina == 'Cripto Bolt':
                 from pgs.crypto_bot import showCryptoBot
                 showCryptoBot()
-            elif pagina == '💧 DeFi & Pools':
+            elif pagina == 'DeFi Pools':
                 from pgs.defi_pools import showDefiPools
                 showDefiPools()
-            elif pagina == '📊 Dashboard':
+            elif pagina == 'Dashboard':
                 from pgs.admin_dashboard import showAdminDashboard
                 showAdminDashboard()
-            elif pagina == '👥 Clientes':
+            elif pagina == 'Clientes':
                 from pgs.admin_clientes import showAdminClientes
                 showAdminClientes()
-            elif pagina == '💳 Stripe':
+            elif pagina == 'Stripe':
                 from pgs.admin_stripe import showAdminStripe
                 showAdminStripe()
-            elif pagina == '⚡ Cripto Bolt v2':
-                from pgs.admin_bot_trader import showAdminBotTrader
+            elif pagina == "⛏️ Cripto Bolt Mineração":
+                from pgs.admin_mineracao_bitcoin import showAdminMineracaoBitcoin
+                showAdminMineracaoBitcoin()
+            elif pagina == 'Cripto Bolt v2':
                 showAdminBotTrader()
-            elif pagina == 'CRIPTO BOLT v2':
-                showAdminBotTrader()
-            elif pagina == '🪙 Binance Config':
+            elif pagina == 'Mineração BCH':
+                from pgs.mineracao_bch import showMineracaoBCH
+                showMineracaoBCH()
+            elif pagina == 'Binance Config':
                 from pgs.binance_config import showBinanceConfig
                 showBinanceConfig()
-            elif pagina == '⚙️ Configurações':
+            elif pagina == 'Configurações':
                 from pgs.admin_config import showAdminConfig
                 showAdminConfig()
+
+            elif pagina == 'Dashboard':
+                from pgs.client_dashboard import showClientDashboard
+                showClientDashboard()
 
         # ── Sidebar Cliente ──
         else:
@@ -801,7 +821,7 @@ def main():
                 render_sidebar_user_header(user, '👤 Cliente')
                 st.divider()
 
-                paginas_cliente = ['🤖 Cripto Bolt', '💧 DeFi & Pools']
+                paginas_cliente = ['Cripto Bolt', 'DeFi Pools']
                 if check_page_permission('acesso_dashboard'):
                     paginas_cliente.append('📊 Dashboard')
 
@@ -817,16 +837,16 @@ def main():
                         del st.session_state[key]
                     st.rerun()
 
-            if pagina == '🤖 Cripto Bolt':
+            if pagina == 'Cripto Bolt':
                 if check_page_permission('acesso_crypto_bot'):
                     from pgs.crypto_bot import showCryptoBot
                     showCryptoBot()
                 else:
                     st.warning('⛔ Acesso ao Crypto Bot está temporariamente desabilitado.')
-            elif pagina == '💧 DeFi & Pools':
+            elif pagina == 'DeFi Pools':
                 from pgs.defi_pools import showDefiPools
                 showDefiPools()
-            elif pagina == '📊 Dashboard':
+            elif pagina == '    Dashboard':
                 from pgs.client_dashboard import showClientDashboard
                 showClientDashboard()
 

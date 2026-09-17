@@ -38,6 +38,7 @@ Thumbs.db
 .env
 bybit.env
 *.env
+credenciais-nicehash-blocksniper.txt
 
 # Local database
 *.db
@@ -45,6 +46,9 @@ cripto_bolt.db
 
 # OAuth tokens (gmail etc.)
 tokens.json
+
+# Runtime state/logs (mineracao BCH)
+exchanges/mineracao_bitcoin/data/
 
 # Build/export artifacts
 ORACULO-CRYPTO.zip

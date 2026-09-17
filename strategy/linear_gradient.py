@@ -68,7 +68,10 @@ class LinearGradientManager:
             "GRADIENT_GRID_STEP_ATR_MULTIPLIER", default=0.75, minimum=0.1, maximum=5.0
         )
         configured_max_dd = self._read_env_float(
-            "GRADIENT_MAX_DRAWDOWN_PCT", default=0.04, minimum=0.005, maximum=0.25
+            "GRADIENT_MAX_DRAWDOWN_PCT",
+            default=0.04,
+            minimum=0.001,
+            maximum=0.25,
         )
 
         self.num_levels = int(num_levels if num_levels is not None else configured_levels)
@@ -204,14 +207,52 @@ class LinearGradientManager:
         return round(max(target, 1e-8), self._precision)
 
     def calculate_stop_loss(self, max_grid_atr_buffer: float = 1.5) -> float:
-        avg_price = self.calculate_average_price() or self.entry_price
-        last_target = self.levels[-1].target_price
-        atr_buffer = self.atr * float(max_grid_atr_buffer)
+        """
+        Calcula o Stop Loss da grade respeitando sempre o drawdown máximo.
 
-        if self.direction == "BUY":
-            stop_price = min(last_target - atr_buffer, avg_price * (1.0 - self.max_drawdown_limit_pct))
+        O buffer de ATR é usado como referência técnica, mas nunca pode ampliar
+        o risco além de self.max_drawdown_limit_pct configurado no .env.
+
+        LONG:
+        - stop técnico: último nível menos buffer de ATR;
+        - stop máximo: preço médio menos o percentual máximo de drawdown;
+        - usa o MAIOR preço, pois o stop não pode ficar mais baixo que o limite.
+
+        SHORT:
+        - stop técnico: último nível mais buffer de ATR;
+        - stop máximo: preço médio mais o percentual máximo de drawdown;
+        - usa o MENOR preço, pois o stop não pode ficar mais alto que o limite.
+        """
+        avg_price = self.calculate_average_price() or self.entry_price
+
+        if avg_price <= 0.0:
+            raise ValueError("Preço médio inválido para cálculo de Stop Loss.")
+
+        if not self.levels:
+            raise ValueError("Não há níveis na grade para cálculo de Stop Loss.")
+
+        last_target = float(self.levels[-1].target_price)
+        atr_buffer = max(0.0, float(self.atr) * float(max_grid_atr_buffer))
+        max_drawdown_pct = max(0.0, float(self.max_drawdown_limit_pct))
+
+        if self.direction.upper() in ("BUY", "LONG"):
+            technical_stop = last_target - atr_buffer
+            maximum_risk_stop = avg_price * (1.0 - max_drawdown_pct)
+
+            # LONG: maior preço = stop mais próximo e risco não excede o limite.
+            stop_price = max(technical_stop, maximum_risk_stop)
+
+        elif self.direction.upper() in ("SELL", "SHORT"):
+            technical_stop = last_target + atr_buffer
+            maximum_risk_stop = avg_price * (1.0 + max_drawdown_pct)
+
+            # SHORT: menor preço = stop mais próximo e risco não excede o limite.
+            stop_price = min(technical_stop, maximum_risk_stop)
+
         else:
-            stop_price = max(last_target + atr_buffer, avg_price * (1.0 + self.max_drawdown_limit_pct))
+            raise ValueError(
+                f"Direção inválida para cálculo de Stop Loss: {self.direction}"
+            )
 
         return round(max(stop_price, 1e-8), self._precision)
 

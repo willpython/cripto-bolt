@@ -92,6 +92,46 @@ class BybitExecutionEngine:
             logger.info("Alavancagem para %s já configurada ou indisponível: %s", symbol, exc)
         self.configured_symbols.add(symbol)
 
+    async def set_symbol_leverage(
+        self,
+        futures_symbol: str,
+        leverage: int,
+    ) -> int:
+        """
+        Configura a alavancagem de um contrato USDⓈ-M Futures na Binance.
+
+        A alavancagem é configurada por símbolo na exchange. Ela não deve ser
+        tratada como um atributo meramente local do executor.
+        """
+        leverage = int(leverage)
+
+        if leverage < 1 or leverage > 10:
+            raise ValueError(
+                f"Alavancagem inválida: {leverage}x. "
+                "A faixa permitida pelo Cripto Bolt é de 1x a 10x."
+            )
+
+        await self.ensure_markets_loaded()
+
+        market = self.client.market(futures_symbol)
+        market_id = market["id"]
+
+        response = await self.client.fapiPrivatePostLeverage({
+            "symbol": market_id,
+            "leverage": leverage,
+        })
+
+        self.leverage = leverage
+
+        logger.info(
+            "[%s] Alavancagem Binance Futures configurada: %sx | resposta=%s",
+            futures_symbol,
+            leverage,
+            response,
+        )
+
+        return leverage
+
     async def execute_order(
         self,
         symbol: str,
@@ -103,6 +143,7 @@ class BybitExecutionEngine:
         slippage_tolerance_pct: float = 0.002,
         reduce_only: bool = False,
         position_direction: Optional[str] = None,
+        leverage: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Executa ordens na Bybit V5 Linear."""
         side = side.upper().strip()
@@ -132,6 +173,20 @@ class BybitExecutionEngine:
         await self.ensure_markets_loaded()
         futures_symbol = self.to_futures_symbol(storage_symbol)
         await self.ensure_contract_risk(futures_symbol)
+
+        # Entrada: aplica a alavancagem solicitada pelo tier de convicção.
+        # Saídas reduce_only não devem mudar a alavancagem da posição existente.
+        if not reduce_only:
+            requested_leverage = int(
+                leverage
+                if leverage is not None
+                else os.getenv("BINANCE_FUTURES_LEVERAGE", "3")
+            )
+
+            await self.set_symbol_leverage(
+                futures_symbol=futures_symbol,
+                leverage=requested_leverage,
+            )
 
         norm_qty = float(self.client.amount_to_precision(futures_symbol, quantity))
         norm_price = float(self.client.price_to_precision(futures_symbol, price))

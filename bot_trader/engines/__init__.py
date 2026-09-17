@@ -1,1 +1,0 @@
-"""Engines do Cripto Bolt."""
