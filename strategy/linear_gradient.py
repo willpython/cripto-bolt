@@ -101,7 +101,15 @@ class LinearGradientManager:
 
         calculated_atr = float(atr)
         min_step = self.entry_price * self.min_step_pct
-        self.atr = max(calculated_atr, min_step)
+        # Piso de ATR dedicado, menor que min_step_pct (espacamento de
+        # grade) — evita que um ATR 0/quase-zero infle o alvo de take
+        # profit para o mesmo patamar do espacamento entre niveis (ver
+        # auditoria 2026-09-17, GeometricGradientManager).
+        atr_floor_pct = self._read_env_float(
+            "GRADIENT_ATR_FLOOR_PCT", default=0.0005, minimum=0.00001, maximum=0.01
+        )
+        atr_floor = self.entry_price * atr_floor_pct
+        self.atr = max(calculated_atr, atr_floor)
         self.step_size = max(self.atr * self.grid_step_multiplier, min_step)
 
         self.levels: List[GradientLevel] = []

@@ -152,12 +152,13 @@ class CriptoBoltAgent:
         quantity_per_level: float,
         current_price: float,
         num_levels: Optional[int] = None,
+        leverage: int = 1,
     ) -> bool:
         """
         Valida se uma nova grade cabe simultaneamente:
         - no limite por grade;
         - no limite global de exposição;
-        - no capital operacional reservado para Futures.
+        - na MARGEM operacional reservada para Futures (notional / leverage).
 
         Deve ser chamado imediatamente antes de criar/executar uma nova grade.
         """
@@ -203,11 +204,16 @@ class CriptoBoltAgent:
             )
             return False
 
-        if projected_total_notional > self.futures_capital_limit_usdt + 1e-8:
+        # Com notional alavancado (notional = margem x leverage), o teto real
+        # de capital compara a MARGEM implícita (notional / leverage), não o
+        # notional bruto — senão qualquer grade alavancada seria bloqueada.
+        projected_margin = projected_total_notional / max(int(leverage), 1)
+        if projected_margin > self.futures_capital_limit_usdt + 1e-8:
             logger.warning(
-                f"[{symbol}] Nova grade bloqueada: exposição projetada "
-                f"${projected_total_notional:.2f} excede o capital operacional "
-                f"de ${self.futures_capital_limit_usdt:.2f}."
+                f"[{symbol}] Nova grade bloqueada: margem projetada "
+                f"${projected_margin:.2f} (notional ${projected_total_notional:.2f} / "
+                f"{leverage}x) excede o capital operacional de "
+                f"${self.futures_capital_limit_usdt:.2f}."
             )
             return False
 
@@ -255,6 +261,7 @@ class CriptoBoltAgent:
         self.gradient_progression_type = os.getenv("GRADIENT_PROGRESSION_TYPE", "LINEAR").strip().upper()
         self.gradient_grid_step_atr_mult = float(os.getenv("GRADIENT_GRID_STEP_ATR_MULTIPLIER", 1.00))
         self.gradient_min_step_pct = float(os.getenv("GRADIENT_MIN_STEP_PCT", 0.0040))
+        self.gradient_atr_floor_pct = float(os.getenv("GRADIENT_ATR_FLOOR_PCT", 0.0005))
         self.gradient_take_profit_pct = float(os.getenv("GRADIENT_TAKE_PROFIT_PCT", 0.0055))
         self.gradient_tp_atr_mult = float(os.getenv("GRADIENT_TP_ATR_MULTIPLIER", 0.35))
         self.gradient_max_drawdown_pct = float(os.getenv("GRADIENT_MAX_DRAWDOWN_PCT", 0.0090))
@@ -265,6 +272,12 @@ class CriptoBoltAgent:
         self.markov_regime_threshold = float(os.getenv("MARKOV_REGIME_THRESHOLD_PCT", 0.0008))
         self.circuit_breaker_daily_dd = float(os.getenv("CIRCUIT_BREAKER_DAILY_MAX_DRAWDOWN_PCT", 0.045))
         self.volatility_spike_max_atr_ratio = float(os.getenv("VOLATILITY_SPIKE_MAX_ATR_RATIO", 2.50))
+
+        # Circuit breakers de CONTA (banca), distintos do kill-switch por grade:
+        # encerram o agente por completo ao atingir perda ou meta de lucro globais.
+        self.max_account_drawdown_pct = float(os.getenv("MAX_ACCOUNT_DRAWDOWN_PCT", 0.20))
+        self.max_account_profit_multiple = float(os.getenv("MAX_ACCOUNT_PROFIT_MULTIPLE", 3.0))
+        self.account_circuit_breaker_triggered: bool = False
 
         logger.info(
             "Parâmetros de gradiente carregados | tipo=%s | alfa=%.4f | "
@@ -288,26 +301,32 @@ class CriptoBoltAgent:
             self.usdt_per_level = self.max_notional_per_level
 
         # Impede que o teto por grade exceda a reserva de capital disponível.
-        if self.max_notional_per_gradient > self.futures_capital_limit_usdt:
-            logger.warning(
-                "MAX_NOTIONAL_PER_GRADIENT ($%.2f) excede "
-                "BOT_TRADER_FUTURES_CAPITAL_LIMIT_USDT ($%.2f). "
-                "O teto da grade será limitado ao capital operacional.",
-                self.max_notional_per_gradient,
-                self.futures_capital_limit_usdt,
-            )
-            self.max_notional_per_gradient = self.futures_capital_limit_usdt
+        # Com notional alavancado (margem x leverage), o teto legitimamente
+        # pode superar a banca — o limite real é banca x maior alavancagem
+        # configurada (BINANCE_FUTURES_LEVERAGE_HIGH), não a banca em si.
+        max_leverage_configured = int(os.getenv("BINANCE_FUTURES_LEVERAGE_HIGH", "10"))
+        max_notional_ceiling = self.futures_capital_limit_usdt * max_leverage_configured
 
-        # A exposição global jamais pode ficar acima do capital operacional configurado.
-        if self.max_total_open_notional > self.futures_capital_limit_usdt:
+        if self.max_notional_per_gradient > max_notional_ceiling:
             logger.warning(
-                "MAX_TOTAL_OPEN_NOTIONAL ($%.2f) excede "
-                "BOT_TRADER_FUTURES_CAPITAL_LIMIT_USDT ($%.2f). "
-                "A exposição global será limitada ao capital operacional.",
-                self.max_total_open_notional,
+                "MAX_NOTIONAL_PER_GRADIENT ($%.2f) excede banca x alavancagem "
+                "máxima ($%.2f = $%.2f x %dx). O teto da grade será limitado.",
+                self.max_notional_per_gradient,
+                max_notional_ceiling,
                 self.futures_capital_limit_usdt,
+                max_leverage_configured,
             )
-            self.max_total_open_notional = self.futures_capital_limit_usdt
+            self.max_notional_per_gradient = max_notional_ceiling
+
+        # A exposição global jamais pode ficar acima de banca x alavancagem máxima.
+        if self.max_total_open_notional > max_notional_ceiling:
+            logger.warning(
+                "MAX_TOTAL_OPEN_NOTIONAL ($%.2f) excede banca x alavancagem "
+                "máxima ($%.2f). A exposição global será limitada.",
+                self.max_total_open_notional,
+                max_notional_ceiling,
+            )
+            self.max_total_open_notional = max_notional_ceiling
 
         self.feed = CryptoDataFeed(exchange_id="binance")
         self.executor = ExchangeExecutionEngine(exchange_id="binance")
@@ -473,6 +492,7 @@ class CriptoBoltAgent:
                 min_step_pct=self.gradient_min_step_pct,
                 take_profit_mult=self.gradient_tp_atr_mult,
                 kill_switch_pct=self.gradient_max_drawdown_pct,
+                atr_floor_pct=self.gradient_atr_floor_pct,
             )
             logger.info(
                 "[%s] Grade GEOMÉTRICA criada | step=%.4f%% | alfa=%.4f",
@@ -682,6 +702,10 @@ class CriptoBoltAgent:
             if (order_id and float(exchange_pnl) != 0.0)
             else float(estimated_pnl)
         )
+        # As taxas da exchange sao reportadas separadas do realizedPnl (Binance
+        # nao inclui commission nesse campo); sem subtrair aqui, PnL_liquido
+        # ficava superestimado em toda saida, mascarando o efeito das taxas.
+        final_pnl -= float(fees)
 
         # 5. Atualização dos contadores operacionais e financeiros.
         if "TAKE_PROFIT" in reason.upper():
@@ -802,14 +826,18 @@ class CriptoBoltAgent:
         self.processed_order_keys.add(idempotency_key)
         self.total_trades_count += 1
 
-        await self.refresh_exchange_protection(symbol, grad)
+        await self.refresh_exchange_protection(symbol, grad, reference_price=executed_price)
         logger.info(
             f"[{symbol}] Nível {level.level} confirmado: status={status} "
             f"preço={executed_price:.6f} ordem={exchange_order_id}"
         )
 
         try:
-            await TelegramNotifier.notificar_ordem(order_result)
+            await TelegramNotifier.notificar_ordem({
+                **order_result,
+                "level": level.level,
+                "progression_type": self.gradient_progression_type,
+            })
         except Exception as exc:
             logger.warning(f"[{symbol}] Ordem confirmada, mas Telegram falhou no nível {level.level}: {exc}")
 
@@ -905,6 +933,7 @@ class CriptoBoltAgent:
         self,
         symbol: str,
         gradient: GradientType,
+        reference_price: Optional[float] = None,
     ) -> None:
         filled_levels = gradient.get_filled_levels()
         total_quantity = float(sum(level.quantity for level in filled_levels))
@@ -944,7 +973,57 @@ class CriptoBoltAgent:
                 f"SL_ID={protection.stop_loss_order_id})"
             )
         except Exception as exc:
+            error_text = str(exc)
             logger.exception(f"[{symbol}] CRÍTICO: posição aberta sem TP/SL confirmado na exchange: {exc}")
+
+            if "BRACKET_REJECTED_IMMEDIATE_TRIGGER" not in error_text and "-2021" not in error_text:
+                return
+
+            # O preço de marca já cruzou o TP ou o SL antes de a ordem
+            # condicional ser aceita — deixar a posição aberta sem NENHUMA
+            # proteção resting na exchange é mais arriscado do que fechar a
+            # mercado agora. Usa o último preço do ciclo (ou recotação real)
+            # para decidir se foi o TP ou o SL que já foi ultrapassado.
+            price_now = reference_price
+            if not price_now or price_now <= 0.0:
+                try:
+                    futures_symbol = self.executor.to_futures_symbol(symbol)
+                    ticker = await self.executor.client.fetch_ticker(futures_symbol)
+                    price_now = float(ticker.get("last") or ticker.get("close") or 0.0)
+                except Exception as ticker_exc:
+                    logger.error(f"[{symbol}] Falha ao recotar preço para fechamento de segurança: {ticker_exc}")
+                    price_now = None
+
+            if not price_now or price_now <= 0.0:
+                logger.critical(
+                    f"[{symbol}] Sem preço confiável para decidir fechamento de segurança; "
+                    "posição segue sem proteção resting até o próximo ciclo tentar novamente."
+                )
+                return
+
+            is_long = gradient.direction.upper() in ("BUY", "LONG")
+            reached_tp = (price_now >= take_profit) if is_long else (price_now <= take_profit)
+            reached_sl = (price_now <= stop_loss) if is_long else (price_now >= stop_loss)
+
+            if not (reached_tp or reached_sl):
+                logger.warning(
+                    f"[{symbol}] Bracket rejeitado, mas preço atual (${price_now:.6f}) não cruza "
+                    f"mais TP=${take_profit:.6f}/SL=${stop_loss:.6f}; tentará novamente no próximo ciclo."
+                )
+                return
+
+            reason = "TAKE_PROFIT_ALCANCADO" if reached_tp else "KILL_SWITCH_BRACKET_REJEITADO"
+            logger.critical(
+                f"[{symbol}] Fechando a mercado por segurança: bracket rejeitado (Order would "
+                f"immediately trigger) e preço atual ${price_now:.6f} já cruzou "
+                f"{'TP' if reached_tp else 'SL'}."
+            )
+            await self.finalize_gradient_exit(
+                symbol=symbol,
+                grad=gradient,
+                reason=reason,
+                reference_exit_price=price_now,
+            )
 
     async def process_symbol_pipeline(self, symbol: str) -> Optional[Tuple[str, float]]:
         """
@@ -1006,7 +1085,7 @@ class CriptoBoltAgent:
                     df=df,
                     symbol=symbol,
                     timeframe="1m",
-                    account_context={"daily_drawdown_pct": 0.0},
+                    account_context={"daily_drawdown_pct": self.get_account_realized_drawdown_pct()},
                 )
 
                 await save_signal_to_db(signal)
@@ -1085,7 +1164,7 @@ class CriptoBoltAgent:
                     #
                     # A função deve respeitar o teto self.max_notional_per_level
                     # e devolver: quantidade ajustada, alavancagem e nome do tier.
-                    qty_adjusted, leverage = calculate_confidence_adjusted_quantity(
+                    qty_margin, leverage = calculate_confidence_adjusted_quantity(
                         base_quantity=qty_base_per_level,
                         confidence_pct=signal.confidence,
                         max_notional_per_level=self.max_notional_per_level,
@@ -1094,8 +1173,11 @@ class CriptoBoltAgent:
 
                     tier = self.get_confidence_tier_label(signal.confidence)
 
-                    qty_adjusted = float(qty_adjusted)
                     leverage = int(leverage)
+                    # Notional real = margem (tier de conviccao) x alavancagem do
+                    # tier — sem isso, o lucro/perda em dolar fica preso ao valor
+                    # da margem e nunca escala com a alavancagem configurada.
+                    qty_adjusted = float(qty_margin) * leverage
 
                     if qty_adjusted <= 0.0:
                         logger.warning(
@@ -1113,7 +1195,8 @@ class CriptoBoltAgent:
                         f"[{symbol}] Sizing aprovado | tier={tier} | "
                         f"confiança={signal.confidence:.2%} | "
                         f"qtd-base={qty_base_per_level:.8f} | "
-                        f"qtd-ajustada={qty_adjusted:.8f} | "
+                        f"qtd-margem={qty_margin:.8f} | "
+                        f"qtd-ajustada(alavancada)={qty_adjusted:.8f} | "
                         f"notional/nível=${adjusted_notional_per_level:.2f} | "
                         f"notional/grade=${projected_gradient_notional:.2f} | "
                         f"alavancagem={leverage}x."
@@ -1128,6 +1211,7 @@ class CriptoBoltAgent:
                         quantity_per_level=qty_adjusted,
                         current_price=current_close,
                         num_levels=self.gradient_num_levels,
+                        leverage=leverage,
                     ):
                         return symbol, current_close
 
@@ -1260,7 +1344,7 @@ class CriptoBoltAgent:
 
                     # 7. Cria ou atualiza as proteções após a confirmação da entrada.
                     try:
-                        await self.refresh_exchange_protection(symbol, gradient)
+                        await self.refresh_exchange_protection(symbol, gradient, reference_price=executed_price)
                         logger.info(f"[{symbol}] TP/SL protetivos registrados na Binance Demo.")
 
                     except Exception as protection_exc:
@@ -1270,7 +1354,11 @@ class CriptoBoltAgent:
                         )
 
                     try:
-                        await TelegramNotifier.notificar_ordem(ordem_res)
+                        await TelegramNotifier.notificar_ordem({
+                            **ordem_res,
+                            "level": 1,
+                            "progression_type": self.gradient_progression_type,
+                        })
                         logger.info(f"[{symbol}] Notificação da ordem enviada ao Telegram.")
 
                     except Exception as telegram_exc:
@@ -1348,6 +1436,67 @@ class CriptoBoltAgent:
             except Exception as exc:
                 logger.exception(f"[{symbol}] Erro no pipeline: {exc}")
                 return None
+
+    def get_account_realized_drawdown_pct(self) -> float:
+        """PnL líquido realizado / banca inicial, como fração negativa quando em perda."""
+        if self.futures_capital_limit_usdt <= 0.0:
+            return 0.0
+        net_realized = self.takeprofit_usd - self.stoploss_usd
+        return min(0.0, net_realized) / self.futures_capital_limit_usdt
+
+    async def check_account_circuit_breakers(self) -> bool:
+        """
+        Circuit breaker de CONTA (banca): encerra o agente por completo ao
+        atingir a perda máxima (MAX_ACCOUNT_DRAWDOWN_PCT) ou a meta de lucro
+        (MAX_ACCOUNT_PROFIT_MULTIPLE), ambos como fração/múltiplo da banca
+        inicial (futures_capital_limit_usdt). Distinto do kill-switch por
+        grade (check_kill_switch) e do kill-switch diário do decision_engine.
+        Retorna True se o loop principal deve parar.
+        """
+        if self.account_circuit_breaker_triggered:
+            return True
+
+        net_realized = self.takeprofit_usd - self.stoploss_usd
+        max_loss_usd = self.futures_capital_limit_usdt * self.max_account_drawdown_pct
+        profit_target_usd = self.futures_capital_limit_usdt * self.max_account_profit_multiple
+
+        if net_realized <= -max_loss_usd:
+            self.account_circuit_breaker_triggered = True
+            logger.critical(
+                f"🛑 CIRCUIT BREAKER DE CONTA: perda realizada ${abs(net_realized):.4f} "
+                f"atingiu o limite de {self.max_account_drawdown_pct:.0%} da banca "
+                f"(${max_loss_usd:.4f}). Encerrando o agente."
+            )
+            try:
+                await TelegramNotifier.notificar_heartbeat({
+                    "alerta": "CIRCUIT_BREAKER_PERDA_MAXIMA",
+                    "net_realized_usd": net_realized,
+                    "limite_usd": -max_loss_usd,
+                    "banca_inicial_usdt": self.futures_capital_limit_usdt,
+                })
+            except Exception as exc:
+                logger.warning(f"Falha ao notificar circuit breaker de perda: {exc}")
+            return True
+
+        if net_realized >= profit_target_usd:
+            self.account_circuit_breaker_triggered = True
+            logger.critical(
+                f"🎯 META DE LUCRO ATINGIDA: PnL realizado ${net_realized:.4f} "
+                f"atingiu {self.max_account_profit_multiple:.1f}x a banca "
+                f"(${profit_target_usd:.4f}). Encerrando o agente."
+            )
+            try:
+                await TelegramNotifier.notificar_heartbeat({
+                    "alerta": "META_DE_LUCRO_ATINGIDA",
+                    "net_realized_usd": net_realized,
+                    "meta_usd": profit_target_usd,
+                    "banca_inicial_usdt": self.futures_capital_limit_usdt,
+                })
+            except Exception as exc:
+                logger.warning(f"Falha ao notificar meta de lucro: {exc}")
+            return True
+
+        return False
 
     async def check_and_send_heartbeat(self, current_prices: Dict[str, float]) -> None:
         now = datetime.now()
@@ -1446,7 +1595,7 @@ class CriptoBoltAgent:
             "unrealized_pnl_usdt": round(unrealized_pnl_usdt, 8),
             "total_equity_pnl_usdt": total_equity_pnl_usdt,
 
-            "daily_drawdown_pct": 0.0,
+            "daily_drawdown_pct": self.get_account_realized_drawdown_pct(),
             "ai_quant_enabled": True,
         }
 
@@ -1490,6 +1639,8 @@ class CriptoBoltAgent:
 
             while True:
                 await self.run_single_cycle()
+                if await self.check_account_circuit_breakers():
+                    break
                 logger.info(f"⏱ Ciclo concluído. Aguardando {interval_seconds}s para o próximo...")
                 await asyncio.sleep(interval_seconds)
         except (asyncio.CancelledError, KeyboardInterrupt):

@@ -425,7 +425,11 @@ class TelegramNotifier:
         is_take_profit = "TAKE_PROFIT" in str(motivo).upper()
         is_profit = pnl_usdt > 0.0
 
-        if is_take_profit and is_profit:
+        if is_take_profit:
+            # O gatilho já é TAKE_PROFIT_ALCANCADO; rotular como "STOP/KILL
+            # SWITCH" só porque o PnL fechou em $0.00 (ex.: ATR ~0 colapsando
+            # o TP em cima do preço médio) é enganoso — mantém o título de
+            # TP mesmo quando pnl_usdt não é estritamente positivo.
             status_title = "🏁 <b>CICLO ENCERRADO — TAKE PROFIT (LUCRO)</b>"
         elif is_profit:
             status_title = "🏁 <b>CICLO ENCERRADO — LUCRO CONFIRMADO</b>"

@@ -223,22 +223,29 @@ class ProtectiveOrdersManager:
         sl_order: Optional[Dict[str, Any]] = None
 
         try:
+            # TAKE_PROFIT (não TAKE_PROFIT_MARKET): ordem com preço-limite que
+            # so' executa quando o mercado tocar normalized_tp, permitindo fill
+            # como maker (~0.02%) em vez de taker (~0.05%). Seguro para TP porque
+            # o preço já é favorável por definição — sem risco de perseguir o
+            # mercado como uma entrada LIMIT teria. SL continua STOP_MARKET:
+            # certeza de execução importa mais que taxa quando é para cortar perda.
             tp_order = await self.client.create_order(
                 market_symbol,
-                "TAKE_PROFIT_MARKET",
+                "TAKE_PROFIT",
                 exit_side,
                 normalized_quantity,
-                None,
+                normalized_tp,
                 params={
                     **common_params,
                     "stopPrice": normalized_tp,
+                    "timeInForce": "GTC",
                 },
             )
 
             tp_order_id = str(tp_order.get("id") or "")
             if not tp_order_id:
                 raise RuntimeError(
-                    f"[{symbol}] Binance não retornou o ID da ordem TAKE_PROFIT_MARKET."
+                    f"[{symbol}] Binance não retornou o ID da ordem TAKE_PROFIT."
                 )
 
             sl_order = await self.client.create_order(

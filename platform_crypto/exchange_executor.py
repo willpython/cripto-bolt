@@ -78,6 +78,14 @@ class ExchangeExecutionEngine:
 
         self.min_notional_fallback = float(os.getenv("FUTURES_MIN_NOTIONAL_FALLBACK", "5.0"))
         self.max_notional_per_level = float(os.getenv("FUTURES_MAX_NOTIONAL_PER_LEVEL", "6.50"))
+        # Notional final por linha e' margem x alavancagem do tier (ate
+        # BINANCE_FUTURES_LEVERAGE_HIGH), nao mais so' a margem — sem este
+        # teto alavancado, toda ordem alavancada era rejeitada aqui mesmo
+        # depois de aprovada em agent_main.can_open_gradient() (2026-09-18).
+        self.max_leverage_configured = int(os.getenv("BINANCE_FUTURES_LEVERAGE_HIGH", "10"))
+        self.max_notional_per_level_leveraged = (
+            self.max_notional_per_level * self.max_leverage_configured
+        )
 
         exchange_class = getattr(ccxtasync, self.exchange_id, None)
         if not exchange_class:
@@ -271,10 +279,11 @@ class ExchangeExecutionEngine:
             normalized_amount = float(self.client.amount_to_precision(futures_symbol, raw_amount))
             effective_notional = normalized_amount * normalized_price
 
-        if effective_notional > self.max_notional_per_level * 1.01:
+        if effective_notional > self.max_notional_per_level_leveraged * 1.01:
             raise ValueError(
-                f"Notional normalizado {effective_notional:.4f} excede limite configurado de "
-                f"{self.max_notional_per_level:.2f} por linha."
+                f"Notional normalizado {effective_notional:.4f} excede limite alavancado "
+                f"configurado de {self.max_notional_per_level_leveraged:.2f} por linha "
+                f"({self.max_notional_per_level:.2f} margem x {self.max_leverage_configured}x)."
             )
 
         return {

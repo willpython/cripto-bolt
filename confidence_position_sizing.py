@@ -23,15 +23,19 @@ def get_leverage_and_multiplier_by_confidence(confidence_pct: float) -> Tuple[in
     A alavancagem permanece em faixa segura (5x-10x). O multiplicador de
     notional aumenta a exposição em capital real, não a alavancagem, evitando
     liquidação prematura por proximidade estatística.
+
+    Recebe confidence_pct como FRAÇÃO (0.0-1.0), mesma escala de
+    TradeSignal.confidence — único chamador real (agent_main.py) sempre
+    passa signal.confidence diretamente, nunca *100.
     """
     safe_leverage_low = int(os.getenv("BINANCE_FUTURES_LEVERAGE_LOW", "5"))
     safe_leverage_high = int(os.getenv("BINANCE_FUTURES_LEVERAGE_HIGH", "10"))
 
-    if confidence_pct >= 90.0:
+    if confidence_pct >= 0.90:
         return safe_leverage_high, float(os.getenv("SIZE_MULTIPLIER_TIER_90", "2.0"))
-    elif confidence_pct >= 80.0:
+    elif confidence_pct >= 0.80:
         return safe_leverage_high, float(os.getenv("SIZE_MULTIPLIER_TIER_80", "1.5"))
-    elif confidence_pct >= 70.0:
+    elif confidence_pct >= 0.70:
         return safe_leverage_low, float(os.getenv("SIZE_MULTIPLIER_TIER_70", "1.2"))
     else:
         return safe_leverage_low, 1.0

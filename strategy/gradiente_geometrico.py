@@ -96,6 +96,7 @@ class GeometricGradientManager:
         take_profit_mult: float = 2.5,
         stop_loss_mult: float = 1.5,
         kill_switch_pct: float = 0.02,
+        atr_floor_pct: float = 0.0005,
     ) -> None:
         if direction.upper() not in VALID_DIRECTIONS:
             raise ValueError(f"Direção inválida para grade geométrica: {direction!r}")
@@ -107,14 +108,20 @@ class GeometricGradientManager:
         self.symbol = symbol
         self.direction = direction.upper()
         self.entry_price = float(entry_price)
-        self.atr = float(max(atr, 0.0))
+        self.min_step_pct = float(min_step_pct)
+        # Piso de ATR dedicado (atr_floor_pct), independente do min_step_pct do
+        # espacamento da grade — um so' protege contra ATR 0/quase-zero sem
+        # inflar o alvo de take profit (ver auditoria 2026-09-17: reusar
+        # min_step_pct=0.40% aqui fazia o TP mirar ~0.80% em vez do ATR real
+        # de ~0.08-0.10%, quase igualando o stop-loss fixo).
+        self.atr_floor_pct = float(atr_floor_pct)
+        self.atr = max(float(atr), self.entry_price * self.atr_floor_pct)
         self.num_levels = int(num_levels)
         self.volume_per_level = float(max(volume_per_level, 0.0))
 
         # "Alfa": fator de expansão da grade. Controla quão agressivamente
         # o step percentual cresce a partir da volatilidade relativa (ATR/preço).
         self.alfa = float(alfa)
-        self.min_step_pct = float(min_step_pct)
         self.max_step_pct = float(max_step_pct)
 
         self.take_profit_mult = float(take_profit_mult)
