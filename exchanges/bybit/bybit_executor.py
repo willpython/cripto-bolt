@@ -135,11 +135,12 @@ class BybitExecutionEngine:
         futures_symbol: str,
         leverage: int,
     ) -> int:
-        """
-        Configura a alavancagem de um contrato linear USDT-M na Bybit V5.
+        """Configura alavancagem por símbolo (Bybit V5 Linear), memoizando o par (símbolo, leverage).
 
-        A alavancagem é configurada por símbolo na exchange. Ela não deve ser
-        tratada como um atributo meramente local do executor.
+        Sem essa memoização toda ordem chamava set_leverage duas vezes (uma via
+        ensure_contract_risk e outra aqui), adicionando ~900ms de round-trip para
+        um no-op (retCode 110043 "leverage not modified") — latencia que a Binance
+        não tem porque toda ordem MARKET lá já volta FILLED na resposta do create.
         """
         leverage = int(leverage)
 
@@ -149,23 +150,25 @@ class BybitExecutionEngine:
                 "A faixa permitida pelo Cripto Bolt é de 1x a 10x."
             )
 
+        cache_key = (futures_symbol, leverage)
+        if cache_key in self.configured_symbols:
+            self.leverage = leverage
+            return leverage
+
         await self.ensure_markets_loaded()
 
         try:
             response = await self.client.set_leverage(leverage, futures_symbol)
+            logger.info(
+                "[%s] Alavancagem Bybit V5 configurada: %sx | resposta=%s",
+                futures_symbol, leverage, response,
+            )
         except Exception as exc:
-            logger.info("[%s] Alavancagem %sx já configurada ou indisponível: %s", futures_symbol, leverage, exc)
-            response = None
+            # 110043 "leverage not modified" e' o caso normal (ja' esta' no valor certo).
+            logger.debug("[%s] Alavancagem %sx já configurada: %s", futures_symbol, leverage, exc)
 
         self.leverage = leverage
-
-        logger.info(
-            "[%s] Alavancagem Bybit V5 configurada: %sx | resposta=%s",
-            futures_symbol,
-            leverage,
-            response,
-        )
-
+        self.configured_symbols.add(cache_key)
         return leverage
 
     async def execute_order(
@@ -208,17 +211,17 @@ class BybitExecutionEngine:
 
         await self.ensure_markets_loaded()
         futures_symbol = self.to_futures_symbol(storage_symbol)
-        await self.ensure_contract_risk(futures_symbol)
 
-        # Entrada: aplica a alavancagem solicitada pelo tier de convicção.
-        # Saídas reduce_only não devem mudar a alavancagem da posição existente.
+        # Entrada: aplica a alavancagem do tier. Saídas reduce_only usam a
+        # alavancagem já configurada na posição — não chamar set_leverage nelas
+        # (economiza um round-trip). ensure_contract_risk foi removido por ser
+        # redundante com set_symbol_leverage e adicionar ~450ms de no-op.
         if not reduce_only:
             requested_leverage = int(
                 leverage
                 if leverage is not None
                 else os.getenv("BYBIT_FUTURES_LEVERAGE", "3")
             )
-
             await self.set_symbol_leverage(
                 futures_symbol=futures_symbol,
                 leverage=requested_leverage,
@@ -267,9 +270,11 @@ class BybitExecutionEngine:
         # executa na hora) ser tratada como "nao confirmada" (status None),
         # deixando a posicao aberta na exchange sem TP/SL e sem rastreio no
         # agente (achado 2026-09-18: 5 posicoes reais abertas e orfas).
+        # Polling reduzido (3x150ms) para minimizar overhead vs Binance, que ja'
+        # volta FILLED na resposta do create sem polling nenhum.
         if order_type == "MARKET" and order_id:
-            for attempt in range(4):
-                await asyncio.sleep(0.4)
+            for attempt in range(3):
+                await asyncio.sleep(0.15)
                 try:
                     # acknowledged=True evita o ArgumentsRequired que a ccxt levanta por
                     # padrao (Bybit so garante fetch_order p/ ordens nas ultimas 500).
