@@ -247,9 +247,15 @@ class GeometricGradientManager:
         return round(avg_price - offset, 8)
 
     def calculate_stop_loss(self) -> float:
-        """Stop a partir do preço médio real, deslocado por stop_loss_mult * ATR."""
+        """
+        Stop a partir do preço médio real, deslocado por stop_loss_mult * ATR,
+        nunca além de kill_switch_pct (teto real de risco - objetivo 2d).
+        Sem esse teto, um pico de ATR no momento da entrada alarga o stop
+        resting na exchange muito além do que o kill-switch por software
+        pretende permitir (ver auditoria 2026-09-18, incidente XRP/USDT).
+        """
         avg_price = self.calculate_average_price() or self.entry_price
-        offset = self.atr * self.stop_loss_mult
+        offset = min(self.atr * self.stop_loss_mult, avg_price * self.kill_switch_pct)
 
         if self.direction in ("BUY", "LONG"):
             return round(avg_price - offset, 8)

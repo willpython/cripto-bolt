@@ -200,6 +200,31 @@ class ProtectiveOrdersManager:
         else:
             raise ValueError(f"[{symbol}] Direção inválida: {direction}.")
 
+        # Pré-checagem com preço de marca fresco: evita um round-trip fadado
+        # ao fracasso na Binance (e o traceback ruidoso de
+        # OrderImmediatelyFillable) quando o preço já cruzou o TP ou o SL
+        # antes mesmo de tentarmos criar a ordem — comum logo após um fill
+        # rápido/pico de volatilidade. Não cancela a proteção anterior aqui:
+        # se ela ainda existir, pode já ter executado a saída sozinha.
+        try:
+            ticker = await self.client.fetch_ticker(market_symbol)
+            mark_price = float(ticker.get("last") or ticker.get("close") or 0.0)
+        except Exception:
+            mark_price = 0.0
+
+        if mark_price > 0.0:
+            if normalized_direction in ("BUY", "LONG"):
+                already_crossed = mark_price >= normalized_tp or mark_price <= normalized_sl
+            else:
+                already_crossed = mark_price <= normalized_tp or mark_price >= normalized_sl
+
+            if already_crossed:
+                raise RuntimeError(
+                    f"[{symbol}] BRACKET_REJECTED_IMMEDIATE_TRIGGER: "
+                    f"TP={normalized_tp} SL={normalized_sl} preco_marca={mark_price}. "
+                    "O preço de marca já alcançou ou ultrapassou o gatilho de uma proteção."
+                )
+
         # Remove proteções anteriores apenas antes de registrar o novo par TP/SL.
         await self.cancel_protective_orders(symbol)
 

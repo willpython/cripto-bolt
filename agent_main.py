@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_UP
 import hashlib
 import logging
@@ -205,15 +205,21 @@ class CriptoBoltAgent:
             return False
 
         # Com notional alavancado (notional = margem x leverage), o teto real
-        # de capital compara a MARGEM implícita (notional / leverage), não o
-        # notional bruto — senão qualquer grade alavancada seria bloqueada.
+        # de capital compara a MARGEM implicita (notional / leverage), nao o
+        # notional bruto - senao qualquer grade alavancada seria bloqueada.
+        #
+        # Objetivo 2b: usa a equity REAL (banca inicial + PnL liquido) como
+        # teto, nunca a banca inicial fixa - o risco por trade encolhe
+        # automaticamente conforme a banca encolhe (lucro do dia nao aumenta
+        # o teto acima da banca inicial).
+        current_equity = self.get_current_equity_usdt()
         projected_margin = projected_total_notional / max(int(leverage), 1)
-        if projected_margin > self.futures_capital_limit_usdt + 1e-8:
+        if projected_margin > current_equity + 1e-8:
             logger.warning(
                 f"[{symbol}] Nova grade bloqueada: margem projetada "
                 f"${projected_margin:.2f} (notional ${projected_total_notional:.2f} / "
-                f"{leverage}x) excede o capital operacional de "
-                f"${self.futures_capital_limit_usdt:.2f}."
+                f"{leverage}x) excede a equity operacional atual de "
+                f"${current_equity:.2f} (banca inicial ${self.futures_capital_limit_usdt:.2f})."
             )
             return False
 
@@ -278,6 +284,19 @@ class CriptoBoltAgent:
         self.max_account_drawdown_pct = float(os.getenv("MAX_ACCOUNT_DRAWDOWN_PCT", 0.20))
         self.max_account_profit_multiple = float(os.getenv("MAX_ACCOUNT_PROFIT_MULTIPLE", 3.0))
         self.account_circuit_breaker_triggered: bool = False
+
+        # Trava suave ("gordura de reserva", objetivo 2a): reduz risco antes do hard-stop.
+        self.soft_drawdown_pct = float(os.getenv("SOFT_DRAWDOWN_PCT", 0.10))
+        self.soft_drawdown_lock_triggered: bool = False
+
+        # Cooldown apos sequencia de stops consecutivos (objetivo 2c).
+        self.max_consecutive_stop_losses = int(os.getenv("MAX_CONSECUTIVE_STOP_LOSSES", 3))
+        self.cooldown_minutes_after_streak = float(os.getenv("COOLDOWN_MINUTES_AFTER_STREAK", 30))
+        self.consecutive_stop_losses: int = 0
+        self.cooldown_until: Optional[datetime] = None
+
+        # Multiplicador de ATR do stop-loss da grade geometrica, antes hardcoded (objetivo 2d).
+        self.gradient_stop_loss_atr_mult = float(os.getenv("GRADIENT_STOP_LOSS_ATR_MULTIPLIER", 1.5))
 
         logger.info(
             "Parâmetros de gradiente carregados | tipo=%s | alfa=%.4f | "
@@ -345,6 +364,13 @@ class CriptoBoltAgent:
         # Cooldown para notificações de sinal.
         self.last_signal_sent_time: Dict[str, datetime] = {}
         self.last_signal_direction: Dict[str, str] = {}
+
+        # Estratégia Binance já validada (2026-09-18): Telegram passa a enviar
+        # somente o resumo de 30 min (heartbeat). Sinal/ordem/fechamento
+        # individuais ficam desligados aqui, mas continuam normalmente para
+        # Bitget/Bybit (agent_bitget.py/agent_bybit.py), que ainda não foram
+        # aprovados e seguem sendo acompanhados de perto.
+        self.telegram_detailed_notifications_enabled: bool = False
 
         # Contadores da sessão.
         self.cycle_count: int = 0
@@ -491,6 +517,7 @@ class CriptoBoltAgent:
                 alfa=self.gradient_grid_step_atr_mult,
                 min_step_pct=self.gradient_min_step_pct,
                 take_profit_mult=self.gradient_tp_atr_mult,
+                stop_loss_mult=self.gradient_stop_loss_atr_mult,
                 kill_switch_pct=self.gradient_max_drawdown_pct,
                 atr_floor_pct=self.gradient_atr_floor_pct,
             )
@@ -594,26 +621,28 @@ class CriptoBoltAgent:
                 self.stoploss_count += 1
                 self.stoploss_usd = round(self.stoploss_usd + abs(min(final_pnl, 0.0)), 8)
 
+            self._register_trade_outcome("TAKE_PROFIT" in reason.upper())
             self.active_gradients.pop(symbol, None)
 
-            try:
-                protection_order_id = (
-                    getattr(grad, "take_profit_order_id", None)
-                    if "TAKE_PROFIT" in reason.upper()
-                    else getattr(grad, "stop_loss_order_id", None)
-                )
+            if self.telegram_detailed_notifications_enabled:
+                try:
+                    protection_order_id = (
+                        getattr(grad, "take_profit_order_id", None)
+                        if "TAKE_PROFIT" in reason.upper()
+                        else getattr(grad, "stop_loss_order_id", None)
+                    )
 
-                await TelegramNotifier.notificar_fechamento(
-                    symbol=symbol,
-                    side=grad.direction,
-                    avg_price=avg_price,
-                    exit_price=reference_exit_price,
-                    quantity=total_quantity,
-                    motivo=f"{reason} (BOOK EXEC)",
-                    order_id=protection_order_id,
-                )
-            except Exception as exc:
-                logger.warning(f"[{symbol}] Notificação Telegram falhou: {exc}")
+                    await TelegramNotifier.notificar_fechamento(
+                        symbol=symbol,
+                        side=grad.direction,
+                        avg_price=avg_price,
+                        exit_price=reference_exit_price,
+                        quantity=total_quantity,
+                        motivo=f"{reason} (BOOK EXEC)",
+                        order_id=protection_order_id,
+                    )
+                except Exception as exc:
+                    logger.warning(f"[{symbol}] Notificação Telegram falhou: {exc}")
 
             return True
 
@@ -715,24 +744,27 @@ class CriptoBoltAgent:
             self.stoploss_count += 1
             self.stoploss_usd = round(self.stoploss_usd + abs(min(final_pnl, 0.0)), 8)
 
+        self._register_trade_outcome("TAKE_PROFIT" in reason.upper())
+
         # 6. Limpeza final e telemetria.
         try:
             await self.protective_orders.clear_symbol(symbol)
         except Exception as exc:
             logger.warning(f"[{symbol}] Erro na limpeza residual de proteções: {exc}")
 
-        try:
-            await TelegramNotifier.notificar_fechamento(
-                symbol=symbol,
-                side=grad.direction,
-                avg_price=avg_price,
-                exit_price=exit_price,
-                quantity=closed_quantity,
-                motivo=reason,
-                order_id=order_id,
-            )
-        except Exception as exc:
-            logger.warning(f"[{symbol}] Fechamento confirmado, mas falhou notificação no Telegram: {exc}")
+        if self.telegram_detailed_notifications_enabled:
+            try:
+                await TelegramNotifier.notificar_fechamento(
+                    symbol=symbol,
+                    side=grad.direction,
+                    avg_price=avg_price,
+                    exit_price=exit_price,
+                    quantity=closed_quantity,
+                    motivo=reason,
+                    order_id=order_id,
+                )
+            except Exception as exc:
+                logger.warning(f"[{symbol}] Fechamento confirmado, mas falhou notificação no Telegram: {exc}")
 
         self.active_gradients.pop(symbol, None)
 
@@ -742,6 +774,25 @@ class CriptoBoltAgent:
             f"PnL={final_pnl:.6f} USDT Taxas={fees:.6f} USDT"
         )
         return True
+
+    def _register_trade_outcome(self, is_take_profit: bool) -> None:
+        """
+        Objetivo 2c: rastreia sequência de perdas consecutivas e ativa um
+        cooldown (bloqueia abertura de NOVAS grades, não afeta as já ativas)
+        após MAX_CONSECUTIVE_STOP_LOSSES stops seguidos.
+        """
+        if is_take_profit:
+            self.consecutive_stop_losses = 0
+            return
+
+        self.consecutive_stop_losses += 1
+        if self.consecutive_stop_losses >= self.max_consecutive_stop_losses:
+            self.cooldown_until = datetime.now() + timedelta(minutes=self.cooldown_minutes_after_streak)
+            logger.warning(
+                f"🧊 COOLDOWN ATIVADO: {self.consecutive_stop_losses} stops consecutivos. "
+                f"Novas grades bloqueadas até {self.cooldown_until.strftime('%H:%M:%S')}."
+            )
+            self.consecutive_stop_losses = 0
 
     def validate_gradient_invariants(self, gradient: GradientType) -> None:
         entry = gradient.entry_price
@@ -832,14 +883,15 @@ class CriptoBoltAgent:
             f"preço={executed_price:.6f} ordem={exchange_order_id}"
         )
 
-        try:
-            await TelegramNotifier.notificar_ordem({
-                **order_result,
-                "level": level.level,
-                "progression_type": self.gradient_progression_type,
-            })
-        except Exception as exc:
-            logger.warning(f"[{symbol}] Ordem confirmada, mas Telegram falhou no nível {level.level}: {exc}")
+        if self.telegram_detailed_notifications_enabled:
+            try:
+                await TelegramNotifier.notificar_ordem({
+                    **order_result,
+                    "level": level.level,
+                    "progression_type": self.gradient_progression_type,
+                })
+            except Exception as exc:
+                logger.warning(f"[{symbol}] Ordem confirmada, mas Telegram falhou no nível {level.level}: {exc}")
 
     async def fetch_realized_pnl_from_exchange(
         self,
@@ -974,9 +1026,15 @@ class CriptoBoltAgent:
             )
         except Exception as exc:
             error_text = str(exc)
-            logger.exception(f"[{symbol}] CRÍTICO: posição aberta sem TP/SL confirmado na exchange: {exc}")
+            is_known_race = "BRACKET_REJECTED_IMMEDIATE_TRIGGER" in error_text or "-2021" in error_text
 
-            if "BRACKET_REJECTED_IMMEDIATE_TRIGGER" not in error_text and "-2021" not in error_text:
+            if is_known_race:
+                # Condição esperada e já tratada abaixo (fecha a posição pelo
+                # lado que já foi cruzado) — não é uma falha inesperada, então
+                # não precisa do traceback completo em nível CRÍTICO.
+                logger.warning(f"[{symbol}] Bracket rejeitado (preço já cruzou TP/SL): {exc}")
+            else:
+                logger.exception(f"[{symbol}] CRÍTICO: posição aberta sem TP/SL confirmado na exchange: {exc}")
                 return
 
             # O preço de marca já cruzou o TP ou o SL antes de a ordem
@@ -1115,7 +1173,7 @@ class CriptoBoltAgent:
                         or (now - last_time).total_seconds() > 180
                     )
 
-                    if is_new_direction or is_cooldown_expired:
+                    if (is_new_direction or is_cooldown_expired) and self.telegram_detailed_notifications_enabled:
                         try:
                             signal_payload = signal.to_dict()
 
@@ -1148,6 +1206,13 @@ class CriptoBoltAgent:
                     signal.direction in ("BUY", "SELL")
                     and symbol not in self.active_gradients
                 ):
+                    if self.cooldown_until and datetime.now() < self.cooldown_until:
+                        logger.debug(
+                            f"[{symbol}] Nova grade bloqueada: cooldown ativo até "
+                            f"{self.cooldown_until.strftime('%H:%M:%S')} (pós sequência de stops)."
+                        )
+                        return symbol, current_close
+
                     # 1. Quantidade-base, calculada a partir de LINE_CAPITAL_USDT.
                     qty_base_per_level = self.calculate_level_quantity(
                         symbol=symbol,
@@ -1164,14 +1229,21 @@ class CriptoBoltAgent:
                     #
                     # A função deve respeitar o teto self.max_notional_per_level
                     # e devolver: quantidade ajustada, alavancagem e nome do tier.
+                    #
+                    # Objetivo 2a: sob trava suave (perda >= SOFT_DRAWDOWN_PCT da
+                    # banca), força o tier mínimo mesmo que o sinal seja forte.
+                    effective_confidence = signal.confidence
+                    if self.check_soft_drawdown_lock():
+                        effective_confidence = min(effective_confidence, 0.69)
+
                     qty_margin, leverage = calculate_confidence_adjusted_quantity(
                         base_quantity=qty_base_per_level,
-                        confidence_pct=signal.confidence,
+                        confidence_pct=effective_confidence,
                         max_notional_per_level=self.max_notional_per_level,
                         current_price=current_close,
                     )
 
-                    tier = self.get_confidence_tier_label(signal.confidence)
+                    tier = self.get_confidence_tier_label(effective_confidence)
 
                     leverage = int(leverage)
                     # Notional real = margem (tier de conviccao) x alavancagem do
@@ -1353,24 +1425,48 @@ class CriptoBoltAgent:
                             f"não foram criados: {protection_exc}"
                         )
 
-                    try:
-                        await TelegramNotifier.notificar_ordem({
-                            **ordem_res,
-                            "level": 1,
-                            "progression_type": self.gradient_progression_type,
-                        })
-                        logger.info(f"[{symbol}] Notificação da ordem enviada ao Telegram.")
+                    if self.telegram_detailed_notifications_enabled:
+                        try:
+                            await TelegramNotifier.notificar_ordem({
+                                **ordem_res,
+                                "level": 1,
+                                "progression_type": self.gradient_progression_type,
+                            })
+                            logger.info(f"[{symbol}] Notificação da ordem enviada ao Telegram.")
 
-                    except Exception as telegram_exc:
-                        logger.warning(
-                            f"[{symbol}] Ordem criada, mas Telegram falhou: {telegram_exc}"
-                        )
+                        except Exception as telegram_exc:
+                            logger.warning(
+                                f"[{symbol}] Ordem criada, mas Telegram falhou: {telegram_exc}"
+                            )
 
                 # ---------------------------------------------------------------
                 # Monitoramento de grade ativa.
                 # ---------------------------------------------------------------
                 if symbol in self.active_gradients:
                     grad = self.active_gradients[symbol]
+
+                    # Objetivo 3: protege grades JÁ ABERTAS contra pico de ATR.
+                    # O filtro em SignalDecisionEngine (volatility_anomaly_filter)
+                    # só bloqueia sinais NOVOS; aqui comparamos o ATR ao vivo com
+                    # o ATR de entrada da própria grade e fechamos preventivamente
+                    # se ele disparar além do mesmo limiar configurado.
+                    baseline_atr = float(getattr(grad, "atr", 0.0) or 0.0)
+                    if baseline_atr > 0.0 and signal.atr > 0.0:
+                        live_atr_ratio = signal.atr / baseline_atr
+                        if live_atr_ratio > self.volatility_spike_max_atr_ratio:
+                            logger.critical(
+                                f"[{symbol}] PICO DE ATR em grade aberta: "
+                                f"ATR atual/entrada={live_atr_ratio:.2f}x "
+                                f"(limite={self.volatility_spike_max_atr_ratio:.2f}x). "
+                                "Fechando posição preventivamente."
+                            )
+                            await self.finalize_gradient_exit(
+                                symbol=symbol,
+                                grad=grad,
+                                reason="ATR_SPIKE_PROTECAO_PREVENTIVA",
+                                reference_exit_price=current_close,
+                            )
+                            return symbol, current_close
 
                     await self.check_and_fill_gradient_levels(
                         symbol=symbol,
@@ -1436,6 +1532,41 @@ class CriptoBoltAgent:
             except Exception as exc:
                 logger.exception(f"[{symbol}] Erro no pipeline: {exc}")
                 return None
+
+    def get_current_equity_usdt(self) -> float:
+        """
+        Banca inicial + PnL liquido realizado, usada como teto de risco real
+        (objetivo 2b). Nunca ultrapassa a banca inicial - lucro do dia nao
+        aumenta o teto de exposicao, so perdas o reduzem (gordura de reserva).
+        """
+        net_realized = self.takeprofit_usd - self.stoploss_usd
+        return min(self.futures_capital_limit_usdt, self.futures_capital_limit_usdt + net_realized)
+
+    def check_soft_drawdown_lock(self) -> bool:
+        """
+        Trava suave (objetivo 2a): ao atingir SOFT_DRAWDOWN_PCT da banca em
+        perda, forca novas grades a operarem no tier minimo de conviccao (sem
+        leverage/multiplicador escalonado), sem encerrar o agente. Some
+        automaticamente se a banca se recuperar acima do limite.
+        """
+        net_realized = self.takeprofit_usd - self.stoploss_usd
+        soft_loss_usd = self.futures_capital_limit_usdt * self.soft_drawdown_pct
+        active = net_realized <= -soft_loss_usd
+
+        if active and not self.soft_drawdown_lock_triggered:
+            logger.warning(
+                f"🟡 TRAVA SUAVE ATIVADA: perda realizada ${abs(net_realized):.4f} "
+                f"atingiu {self.soft_drawdown_pct:.0%} da banca (${soft_loss_usd:.4f}). "
+                "Novas grades operarao no tier minimo ate a banca se recuperar."
+            )
+        elif not active and self.soft_drawdown_lock_triggered:
+            logger.info(
+                f"🟢 TRAVA SUAVE DESATIVADA: banca recuperada acima do limite "
+                f"de {self.soft_drawdown_pct:.0%}."
+            )
+
+        self.soft_drawdown_lock_triggered = active
+        return active
 
     def get_account_realized_drawdown_pct(self) -> float:
         """PnL líquido realizado / banca inicial, como fração negativa quando em perda."""

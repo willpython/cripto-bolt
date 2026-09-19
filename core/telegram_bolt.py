@@ -27,16 +27,53 @@ class TelegramNotifier:
     """Disparador proativo de notificações estruturadas do Cripto Bolt com Telemetria IA."""
 
     @staticmethod
+    def _get_exchange_name() -> str:
+        """Nome de exibição da corretora (BINANCE/BYBIT/BITGET), lido de BOT_TRADER_EXCHANGE."""
+        exchange = os.getenv("BOT_TRADER_EXCHANGE", "binance").strip().lower()
+        return {"binance": "BINANCE", "bybit": "BYBIT", "bitget": "BITGET"}.get(exchange, exchange.upper())
+
+    @staticmethod
+    def _is_demo_trading() -> bool:
+        """Checa a flag de demo trading correta para a corretora ativa no processo."""
+        demo_env_key = {
+            "BINANCE": "BINANCE_DEMO_TRADING",
+            "BYBIT": "BYBIT_DEMO_TRADING",
+            "BITGET": "BITGET_DEMO_TRADING",
+        }.get(TelegramNotifier._get_exchange_name())
+        return bool(demo_env_key) and os.getenv(demo_env_key, "false").strip().lower() == "true"
+
+    @staticmethod
+    def _get_exchange_tag() -> str:
+        """
+        Tag curta "[EXCHANGE MODO]" usada no título das notificações, seguindo o
+        modelo aprovado em notificacoes_cripto_bolt_mobile.html (ex.: "[BINANCE DEMO]",
+        "[BITGET DEMO]", "[PAPER TRADING]").
+        """
+        if os.getenv("BOT_TRADER_PAPER_MODE", "true").strip().lower() == "true":
+            return "[PAPER TRADING]"
+
+        exchange_name = TelegramNotifier._get_exchange_name()
+        mode_label = "DEMO" if TelegramNotifier._is_demo_trading() else "REAL"
+        return f"[{exchange_name} {mode_label}]"
+
+    @staticmethod
+    def _get_exchange_diamond() -> str:
+        """Emoji de marca usado no banner do card de fechamento, por corretora."""
+        return {"BINANCE": "🔶", "BITGET": "🔷", "BYBIT": "🟡"}.get(
+            TelegramNotifier._get_exchange_name(), "🔶"
+        )
+
+    @staticmethod
     def _get_execution_mode() -> str:
         paper_mode = os.getenv("BOT_TRADER_PAPER_MODE", "true").strip().lower() == "true"
-        demo_trading = os.getenv("BINANCE_DEMO_TRADING", "false").strip().lower() == "true"
         line_capital = float(os.getenv("LINE_CAPITAL_USDT", "5.0"))
-        
+
         if paper_mode:
             return f"PAPER TRADING (${line_capital:.2f}/linha)"
-        elif demo_trading:
-            return f"BINANCE FUTURES DEMO (${line_capital:.2f}/linha)"
-        return f"LIVE REAL (${line_capital:.2f}/linha)"
+
+        exchange_name = TelegramNotifier._get_exchange_name()
+        mode_label = "DEMO" if TelegramNotifier._is_demo_trading() else "REAL"
+        return f"{exchange_name} FUTURES {mode_label} (${line_capital:.2f}/linha)"
 
     @staticmethod
     def format_usdt(value: float) -> str:
@@ -152,10 +189,10 @@ class TelegramNotifier:
             markov_probs = {}
 
         if direction == "BUY":
-            title = "🚀 <b>SINAL QUANTITATIVO — COMPRA (LONG)</b>"
+            title = f"🚀 <b>{TelegramNotifier._get_exchange_tag()} — SINAL QUANTITATIVO — COMPRA (LONG)</b>"
             side_badge = "🟢 LONG"
         elif direction == "SELL":
-            title = "🔻 <b>SINAL QUANTITATIVO — VENDA (SHORT)</b>"
+            title = f"🔻 <b>{TelegramNotifier._get_exchange_tag()} — SINAL QUANTITATIVO — VENDA (SHORT)</b>"
             side_badge = "🔴 SHORT"
         else:
             return False
@@ -234,7 +271,7 @@ class TelegramNotifier:
         dec = 4 if price < 10 else 2
 
         msg = (
-            f"⚡ <b>ORDEM DE GRADIENTE EXECUTADA</b>\n"
+            f"⚡ <b>{TelegramNotifier._get_exchange_tag()} — ORDEM DE GRADIENTE EXECUTADA</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📌 <b>Par:</b> <code>{html.escape(sym)}</code>\n"
             f"🎯 <b>Operação:</b> {side_icon}\n"
@@ -425,33 +462,26 @@ class TelegramNotifier:
         is_take_profit = "TAKE_PROFIT" in str(motivo).upper()
         is_profit = pnl_usdt > 0.0
 
+        # O gatilho já é TAKE_PROFIT_ALCANCADO; rotular como "STOP/KILL SWITCH"
+        # só porque o PnL fechou em $0.00 (ex.: ATR ~0 colapsando o TP em cima
+        # do preço médio) é enganoso — mantém o rótulo de TP mesmo quando
+        # pnl_usdt não é estritamente positivo.
         if is_take_profit:
-            # O gatilho já é TAKE_PROFIT_ALCANCADO; rotular como "STOP/KILL
-            # SWITCH" só porque o PnL fechou em $0.00 (ex.: ATR ~0 colapsando
-            # o TP em cima do preço médio) é enganoso — mantém o título de
-            # TP mesmo quando pnl_usdt não é estritamente positivo.
-            status_title = "🏁 <b>CICLO ENCERRADO — TAKE PROFIT (LUCRO)</b>"
+            status_text = "TAKE PROFIT (LUCRO)"
         elif is_profit:
-            status_title = "🏁 <b>CICLO ENCERRADO — LUCRO CONFIRMADO</b>"
+            status_text = "LUCRO CONFIRMADO"
         else:
-            status_title = "🛑 <b>CICLO ENCERRADO — STOP / KILL SWITCH</b>"
+            status_text = "STOP / KILL SWITCH"
+
+        exchange_tag = TelegramNotifier._get_exchange_tag()
+        banner_text = exchange_tag.strip("[]")
+        diamond = TelegramNotifier._get_exchange_diamond()
 
         pnl_icon = "🟢" if pnl_usdt > 0.0 else "🔴" if pnl_usdt < 0.0 else "⚪"
         pnl_sign = "+" if pnl_usdt > 0.0 else "-" if pnl_usdt < 0.0 else ""
 
         price_dec = 4 if float(avg_price) < 10.0 else 2
         pnl_dec = 2 if abs(pnl_usdt) >= 0.01 else 6
-
-        try:
-            usdt_brl_rate = float(
-                os.getenv("USDT_BRL_DISPLAY_RATE", "5.12")
-            )
-        except (TypeError, ValueError):
-            usdt_brl_rate = 5.12
-
-        pnl_brl = pnl_usdt * usdt_brl_rate
-        pnl_brl_icon = "🟢" if pnl_brl > 0.0 else "🔴" if pnl_brl < 0.0 else "⚪"
-        pnl_brl_sign = "+" if pnl_brl > 0.0 else "-" if pnl_brl < 0.0 else ""
 
         order_id_text = (
             html.escape(str(order_id))
@@ -464,7 +494,8 @@ class TelegramNotifier:
         motivo_text = html.escape(str(motivo))
 
         message = (
-            f"{status_title}\n"
+            f"{diamond} <b>{banner_text}</b>\n"
+            f"<b>{exchange_tag} — {status_text}</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📌 <b>Par:</b> <code>{symbol_text}</code> ({direction_label})\n"
             f"📦 <b>Volume Total:</b> <code>{float(quantity):g} {base_asset}</code>\n"
@@ -473,13 +504,11 @@ class TelegramNotifier:
             f"💰 <b>Resultado PnL:</b> {pnl_icon} "
             f"<b>{pnl_sign}${abs(pnl_usdt):,.{pnl_dec}f} USDT</b> "
             f"(<code>{pnl_sign}{abs(pnl_pct):.2f}%</code>)\n"
-            f"🇧🇷 <b>Equivalente estimado:</b> {pnl_brl_icon} "
-            f"<b>{pnl_brl_sign}R${abs(pnl_brl):,.2f}</b>\n"
             f"🧾 <b>Ordem de Fechamento:</b> <code>{order_id_text}</code>\n"
             f"⚙️ <b>Gatilho:</b> <code>{motivo_text}</code>\n"
             f"🛡 <b>Ambiente:</b> <code>{TelegramNotifier._get_execution_mode()}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏱ <i>{datetime.now().strftime('%d/%m/%Y %H:%M:%S')} • Cripto Bolt</i>"
+            f"⚡ <i>Cripto Bolt</i> • ⏱ <i>{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}</i>"
         )
 
         if is_take_profit and is_profit:
@@ -619,7 +648,7 @@ class TelegramNotifier:
         positions_text = "\n".join(position_lines)
 
         message = (
-            "<b>💓 CRIPTO BOLT — RESUMO OPERACIONAL (30 MIN)</b>\n"
+            f"<b>💓 CRIPTO BOLT ({TelegramNotifier._get_exchange_name()}) — RESUMO OPERACIONAL (30 MIN)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"⏱ <b>Janela:</b> <code>{datetime.now().strftime('%d/%m/%Y | %H:%M')}</code>\n"
             f"🛡 <b>Modo:</b> <code>{TelegramNotifier._get_execution_mode()}</code>\n"
